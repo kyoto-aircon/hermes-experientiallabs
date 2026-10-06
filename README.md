@@ -83,4 +83,9 @@ standard `hermes-agent` install (and bridge its venv's pure-Python deps when
 pytest runs under a different interpreter). Set `HERMES_AGENT_ROOT` if your
 checkout lives elsewhere.
 
+## AI-generated
+
+This repository was written primarily by AI coding agents under the owner's
+direction — see [`AI_DISCLAIMER.md`](AI_DISCLAIMER.md).
+
 MIT licensed.
