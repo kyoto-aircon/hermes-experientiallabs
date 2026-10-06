@@ -1,0 +1,13 @@
+# Test configuration only. The plugin is loaded by Hermes' own provider
+# discovery (from plugin.yaml / __init__.py), not installed as a package, so
+# there is intentionally no build system or runtime dependency declared here.
+# httpx is imported lazily by the account-usage hook and is already a Hermes
+# Agent dependency.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not integration and not live'"
+markers = [
+    "integration: exercises real network/services (deselected by default)",
+    "live: requires live credentials or a running gateway (deselected by default)",
+]
