@@ -1,0 +1,5 @@
+name: experientiallabs-provider
+kind: model-provider
+version: 0.1.0
+description: Experiential Labs — OpenAI-compatible multi-model gateway
+author: Spheraz
