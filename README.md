@@ -16,7 +16,7 @@ profile automatically wires it into:
 ## Install
 
 ```bash
-hermes plugins install https://github.com/<you>/explabs-provider-plugin
+hermes plugins install https://github.com/epicawesomesauce/explabs-provider-plugin
 ```
 
 Or drop this directory into `$HERMES_HOME/plugins/experientiallabs-provider/`
