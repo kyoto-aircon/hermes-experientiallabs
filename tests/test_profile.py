@@ -6,6 +6,8 @@ network access.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 KNOWN_FALLBACKS = {
@@ -105,7 +107,7 @@ class TestHooks:
         assert type(profile).fetch_account_usage is not ProviderProfile.fetch_account_usage
 
     def test_fetch_account_usage_delegates_with_name_and_credentials(
-        self, plugin, profile, monkeypatch
+        self, profile, monkeypatch
     ):
         captured = {}
         sentinel = object()
@@ -114,7 +116,12 @@ class TestHooks:
             captured.update(name=name, base_url=base_url, api_key=api_key)
             return sentinel
 
-        monkeypatch.setattr(plugin, "fetch_experientiallabs_account_usage", fake_fetch)
+        # Patch the module that actually owns the registered profile: when the
+        # plugin is also installed under $HERMES_HOME, provider discovery may
+        # re-register from that copy, so the conftest ``plugin`` module object
+        # is not necessarily the one the resolved profile was defined in.
+        owner = sys.modules[type(profile).__module__]
+        monkeypatch.setattr(owner, "fetch_experientiallabs_account_usage", fake_fetch)
         result = profile.fetch_account_usage(base_url="https://example.test/v1", api_key="tok")
 
         assert result is sentinel

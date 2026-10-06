@@ -1,8 +1,17 @@
-# Test configuration only. The plugin is loaded by Hermes' own provider
-# discovery (from plugin.yaml / __init__.py), not installed as a package, so
-# there is intentionally no build system or runtime dependency declared here.
-# httpx is imported lazily by the account-usage hook and is already a Hermes
-# Agent dependency.
+# Test configuration plus minimal project metadata. The plugin is loaded by
+# Hermes' own provider discovery (from plugin.yaml / __init__.py), not installed
+# as a package, so there is intentionally no build backend or runtime dependency
+# declared here. A [project] table with a version is still required: Hermes'
+# plugin manager (pm/workspace.py) copies this file into a uv workspace member,
+# and `uv lock` rejects a [project] table whose version is neither set nor
+# dynamic. httpx is imported lazily by the account-usage hook and is already a
+# Hermes Agent dependency.
+
+[project]
+name = "experientiallabs-provider"
+version = "0.1.0"
+description = "Experiential Labs (experientiallabs.ai) model provider for Hermes Agent"
+requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
