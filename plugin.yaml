@@ -1,5 +1,5 @@
-name: experientiallabs-provider
+name: hermes-experientiallabs
 kind: model-provider
-version: 0.1.0
+version: 0.2.0
 description: Experiential Labs — OpenAI-compatible multi-model gateway
 author: Spheraz
