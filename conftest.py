@@ -14,6 +14,7 @@ import resolves.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -40,12 +41,31 @@ def _candidate_hermes_roots():
     yield home / "AppData" / "Local" / "hermes" / "hermes-agent"
 
 
+def _site_packages_of(venv: Path):
+    if not venv.is_dir():
+        return
+    yield from venv.glob("Lib/site-packages")
+    yield from venv.glob("lib/python*/site-packages")
+
+
 def _venv_site_packages(hermes_root: Path):
+    # In-tree venvs (pre-PM layouts)...
     for venv in (hermes_root / "venv", hermes_root / ".venv"):
-        if not venv.is_dir():
+        yield from _site_packages_of(venv)
+    # ...and the dependency venv Hermes' plugin manager (pm) commits outside the
+    # checkout. PM records it in <hermes home>/installs/<key>/facts.json under
+    # ``packages.venv.environment`` (see pm/environments.py: _recorded_venv).
+    for facts in (hermes_root.parent / "installs").glob("*/facts.json"):
+        try:
+            data = json.loads(facts.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
             continue
-        yield from venv.glob("Lib/site-packages")
-        yield from venv.glob("lib/python*/site-packages")
+        try:
+            venv = data.get("packages", {}).get("venv", {}).get("environment")
+        except AttributeError:
+            continue  # valid JSON but not the expected object shape
+        if isinstance(venv, str):
+            yield from _site_packages_of(Path(venv))
 
 
 def _ensure_hermes_importable() -> bool:
