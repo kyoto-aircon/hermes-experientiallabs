@@ -6,6 +6,7 @@ network boundary stubbed so no live call is made.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -311,6 +312,190 @@ class TestGetJson:
         assert account_usage._get_json(client, "https://x", {}) is None
 
 
+class TestUsageSettings:
+    def test_cost_urls_default_on_missing_empty_or_non_string(self, account_usage):
+        defaults = (account_usage._CREDITS_URL, account_usage._KEY_URL)
+        assert account_usage._cost_urls(None) == defaults
+        assert account_usage._cost_urls("") == defaults
+        assert account_usage._cost_urls("   ") == defaults
+        assert account_usage._cost_urls(5) == defaults
+        # Slash-only input must not collapse into relative URLs.
+        assert account_usage._cost_urls("///") == defaults
+
+    def test_cost_urls_join_paths_and_strip_trailing_slash(self, account_usage):
+        assert account_usage._cost_urls("https://mirror.test/api/v1") == (
+            "https://mirror.test/api/v1/credits",
+            "https://mirror.test/api/v1/key",
+        )
+        assert account_usage._cost_urls("https://mirror.test/api/v1/") == (
+            "https://mirror.test/api/v1/credits",
+            "https://mirror.test/api/v1/key",
+        )
+        assert account_usage._cost_urls("https://mirror.test/api/v1///") == (
+            "https://mirror.test/api/v1/credits",
+            "https://mirror.test/api/v1/key",
+        )
+        assert account_usage._cost_urls("  https://mirror.test/api/v1/  ") == (
+            "https://mirror.test/api/v1/credits",
+            "https://mirror.test/api/v1/key",
+        )
+
+    @pytest.mark.parametrize(
+        "value",
+        [None, "abc", "", True, False, 0, -2, float("nan"), float("inf"), float("-inf"), [], {}],
+    )
+    def test_usage_timeout_defaults_on_invalid_values(self, account_usage, value):
+        assert account_usage._usage_timeout(value) == account_usage._HTTP_TIMEOUT_S
+
+    def test_usage_timeout_accepts_numbers_and_numeric_strings(self, account_usage):
+        assert account_usage._usage_timeout(2) == 2.0
+        assert account_usage._usage_timeout(2.5) == 2.5
+        assert account_usage._usage_timeout("2.5") == 2.5
+
+    def test_usage_timeout_clamped_under_hook_deadline(self, account_usage):
+        # Two sequential GETs at the clamp must fit Hermes' 10s usage-hook
+        # deadline with room to spare (2 x 4.5s = 9s).
+        assert account_usage._MAX_TIMEOUT_S <= 4.5
+        assert account_usage._usage_timeout(30) == account_usage._MAX_TIMEOUT_S
+        assert account_usage._usage_timeout("5.5") == account_usage._MAX_TIMEOUT_S
+        assert account_usage._usage_timeout(5.0) == account_usage._MAX_TIMEOUT_S
+        # The clamp is min-semantics: the boundary itself is allowed (the
+        # manifest documents "values above 4.5 are clamped"), never pushed
+        # below.
+        assert account_usage._usage_timeout(4.5) == 4.5
+        assert account_usage._usage_timeout(4.4) == 4.4
+
+
+class TestResolveUsageSettings:
+    def _patch_config(self, monkeypatch, config):
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(config_mod, "load_config_readonly", lambda: config)
+
+    def _defaults(self, account_usage):
+        return (
+            account_usage._CREDITS_URL,
+            account_usage._KEY_URL,
+            account_usage._HTTP_TIMEOUT_S,
+        )
+
+    def test_reads_overrides_from_plugin_settings(self, account_usage, monkeypatch):
+        self._patch_config(
+            monkeypatch,
+            {
+                "plugins": {
+                    "entries": {
+                        "hermes-experientiallabs": {
+                            "settings": {
+                                "cost_api_base": "https://mirror.test/api/v1",
+                                "usage_timeout_s": 2.0,
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        assert account_usage.resolve_usage_settings() == (
+            "https://mirror.test/api/v1/credits",
+            "https://mirror.test/api/v1/key",
+            2.0,
+        )
+
+    def test_defaults_without_plugin_entry(self, account_usage, monkeypatch):
+        self._patch_config(monkeypatch, {"plugins": {"entries": {}}})
+        assert account_usage.resolve_usage_settings() == self._defaults(account_usage)
+
+    def test_defaults_without_settings_block(self, account_usage, monkeypatch):
+        self._patch_config(
+            monkeypatch, {"plugins": {"entries": {"hermes-experientiallabs": {}}}}
+        )
+        assert account_usage.resolve_usage_settings() == self._defaults(account_usage)
+
+    def test_defaults_when_settings_not_a_mapping(self, account_usage, monkeypatch):
+        self._patch_config(
+            monkeypatch,
+            {"plugins": {"entries": {"hermes-experientiallabs": {"settings": "junk"}}}},
+        )
+        assert account_usage.resolve_usage_settings() == self._defaults(account_usage)
+
+    def test_defaults_on_unexpected_config_shape(self, account_usage, monkeypatch):
+        self._patch_config(monkeypatch, {"plugins": "not-a-mapping"})
+        assert account_usage.resolve_usage_settings() == self._defaults(account_usage)
+
+    def test_defaults_when_loader_raises(self, account_usage, monkeypatch):
+        import hermes_cli.config as config_mod
+
+        def boom():
+            raise RuntimeError("config still initializing")
+
+        monkeypatch.setattr(config_mod, "load_config_readonly", boom)
+        assert account_usage.resolve_usage_settings() == self._defaults(account_usage)
+
+    def test_defaults_when_config_import_fails(self, account_usage, monkeypatch):
+        # The lazy ``hermes_cli.config`` import itself failing (broken or
+        # half-initialized install) must fail open like every other error.
+        monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
+        with pytest.raises(ImportError):
+            from hermes_cli.config import load_config_readonly  # noqa: F401
+        assert account_usage.resolve_usage_settings() == self._defaults(account_usage)
+
+    def test_partial_overrides_keep_other_defaults(self, account_usage, monkeypatch):
+        self._patch_config(
+            monkeypatch,
+            {
+                "plugins": {
+                    "entries": {
+                        "hermes-experientiallabs": {
+                            "settings": {"usage_timeout_s": 1.5}
+                        }
+                    }
+                }
+            },
+        )
+        assert account_usage.resolve_usage_settings() == (
+            account_usage._CREDITS_URL,
+            account_usage._KEY_URL,
+            1.5,
+        )
+
+    def test_invalid_setting_values_fall_back_per_key(self, account_usage, monkeypatch):
+        # A hand-edited config.yaml can carry junk for both keys; each key
+        # must fall back to its default independently, never raise.
+        self._patch_config(
+            monkeypatch,
+            {
+                "plugins": {
+                    "entries": {
+                        "hermes-experientiallabs": {
+                            "settings": {"cost_api_base": 42, "usage_timeout_s": "soon"}
+                        }
+                    }
+                }
+            },
+        )
+        assert account_usage.resolve_usage_settings() == self._defaults(account_usage)
+
+    def test_invalid_base_with_valid_timeout_keeps_timeout(self, account_usage, monkeypatch):
+        # Mixed junk: the bad base falls back while the good timeout survives.
+        self._patch_config(
+            monkeypatch,
+            {
+                "plugins": {
+                    "entries": {
+                        "hermes-experientiallabs": {
+                            "settings": {"cost_api_base": [], "usage_timeout_s": 3.0}
+                        }
+                    }
+                }
+            },
+        )
+        assert account_usage.resolve_usage_settings() == (
+            account_usage._CREDITS_URL,
+            account_usage._KEY_URL,
+            3.0,
+        )
+
+
 class TestFetchHook:
     def _patch_runtime(self, monkeypatch, token):
         import hermes_cli.runtime_provider as rp
@@ -433,3 +618,87 @@ class TestFetchHook:
 
         monkeypatch.setattr(account_usage, "_get_json", fake_get_json)
         assert account_usage.fetch_experientiallabs_account_usage("experientiallabs") is None
+
+    def test_settings_reach_the_fetch_urls_and_timeout(self, account_usage, monkeypatch):
+        self._patch_runtime(monkeypatch, "xpl_key")
+
+        def fake_config():
+            return {
+                "plugins": {
+                    "entries": {
+                        "hermes-experientiallabs": {
+                            "settings": {
+                                "cost_api_base": "https://mirror.test/api/v1",
+                                "usage_timeout_s": 2.5,
+                            }
+                        }
+                    }
+                }
+            }
+
+        import hermes_cli.config as config_mod
+        import httpx
+
+        monkeypatch.setattr(config_mod, "load_config_readonly", fake_config)
+
+        seen = {"urls": [], "timeout": None}
+
+        class _RecordingClient:
+            def __init__(self, timeout=None, follow_redirects=False):
+                seen["timeout"] = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get(self, url, headers=None):
+                seen["urls"].append(url)
+                return _FakeResponse(payload={"data": {"total_credits": "1", "total_usage": "0"}})
+
+        monkeypatch.setattr(httpx, "Client", _RecordingClient)
+        snapshot = account_usage.fetch_experientiallabs_account_usage("experientiallabs")
+
+        assert seen["timeout"] == 2.5
+        assert seen["urls"] == [
+            "https://mirror.test/api/v1/credits",
+            "https://mirror.test/api/v1/key",
+        ]
+        assert snapshot is not None
+        assert _window_by_label(snapshot, "Credits") is not None
+
+    def test_default_settings_reach_the_fetch_urls_and_timeout(self, account_usage, monkeypatch):
+        # Empty plugin settings: the fetch must use the built-in default URLs
+        # and timeout — pinned here with the config loader stubbed, so it does
+        # not depend on whatever the machine's real config.yaml happens to say.
+        self._patch_runtime(monkeypatch, "xpl_key")
+
+        import hermes_cli.config as config_mod
+        import httpx
+
+        monkeypatch.setattr(config_mod, "load_config_readonly", lambda: {})
+
+        seen = {"urls": [], "timeout": None}
+
+        class _RecordingClient:
+            def __init__(self, timeout=None, follow_redirects=False):
+                seen["timeout"] = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get(self, url, headers=None):
+                seen["urls"].append(url)
+                return _FakeResponse(payload={"data": {"total_credits": "1", "total_usage": "0"}})
+
+        monkeypatch.setattr(httpx, "Client", _RecordingClient)
+        snapshot = account_usage.fetch_experientiallabs_account_usage("experientiallabs")
+
+        assert seen["timeout"] == account_usage._HTTP_TIMEOUT_S
+        assert seen["urls"] == [account_usage._CREDITS_URL, account_usage._KEY_URL]
+        assert snapshot is not None
+        assert _window_by_label(snapshot, "Credits") is not None
