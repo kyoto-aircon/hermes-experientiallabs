@@ -1,5 +1,7 @@
 # Experiential Labs provider for Hermes Agent
 
+[![tests](https://github.com/kyoto-aircon/hermes-experientiallabs/actions/workflows/ci.yml/badge.svg)](https://github.com/kyoto-aircon/hermes-experientiallabs/actions/workflows/ci.yml)
+
 Adds [experientiallabs.ai](https://experientiallabs.ai) — an OpenAI-compatible
 multi-model gateway (~900 models) — as a first-class provider in
 [Hermes Agent](https://hermes-agent.nousresearch.com).
@@ -43,7 +45,33 @@ hermes -z -m experientiallabs:qwen3.8-27b "hello"
 
 ## Configuration
 
-| Setting | Default |
+Everything is optional — the defaults work against the public gateway, and an
+unconfigured plugin is simply a provider without a key.
+
+**Where to configure:** Desktop → **Settings → Plugins → Experiential Labs**,
+or the TUI/CLI **Plugins hub**. Both render the same form from the plugin
+manifest's `config_schema`. Secrets are read from `.env` at process start, so
+they apply after a Hermes restart; the Cost API settings are read on each
+`/usage` call and apply immediately.
+
+| Setting | Kind | Default | What it does |
+| --- | --- | --- | --- |
+| **API key** | secret | — | Gateway key from [platform.experientiallabs.ai](https://platform.experientiallabs.ai/settings/api-keys). Written to `.env` as `EXPLABS_API_KEY`; equivalent to `hermes auth add experientiallabs`. |
+| **Chat API base URL override** | secret | — | **Advanced** — only for routing chat traffic through a mirror or proxy. Written to `.env` as `EXPLABS_BASE_URL` (Hermes' native base-URL override; honoured by chat, `/model` and doctor). The usage fetch resolves credentials through it but always calls the Cost API base URL. Masked in the UI because only credential fields can write env vars. |
+| **Cost API base URL** | string | `https://api.experientiallabs.ai/api/v1` | **Advanced** — base for the `/usage` endpoints. Only set this if the base URL override points at a mirror that also serves the Cost API (`GET /credits`, `GET /key`). |
+| **Usage fetch timeout (seconds)** | float | `4.0` | **Advanced** — per-request timeout for the two `/usage` GETs. Hermes allows the usage hook 10s total, so values above `4.5` are clamped. |
+
+The two secret fields never touch `config.yaml`; Hermes stores them in `.env`
+through its credential route. The non-secret fields live under
+`plugins.entries.hermes-experientiallabs.settings` in `config.yaml` if you
+prefer editing files directly.
+
+### Profile defaults (not settings)
+
+These are the provider's contract with Hermes, not user configuration —
+they stay pinned in the profile like every bundled provider:
+
+| Default | Value |
 | --- | --- |
 | Base URL | `https://api.experientiallabs.ai/v1` |
 | API key env vars | `EXPLABS_API_KEY`, then `EXPERIENTIALLABS_API_KEY` |
@@ -51,15 +79,30 @@ hermes -z -m experientiallabs:qwen3.8-27b "hello"
 | Auxiliary model | `glm-5.3-flash` (cheap, vision-capable) |
 | Curated fallbacks | `qwen3.8-27b`, `deepseek-v4-flash`, `gpt-6-luna`, `claude-haiku-4.5`, `gpt-6-astra` |
 
-Override the base URL with `EXPLABS_BASE_URL` (declared in the profile's
-`env_vars`, so Hermes honours it) or by pinning `model.provider: experientiallabs`
-together with `model.base_url` in `config.yaml`.
+`fallback_models` is the curated model-picker floor Hermes shows when live
+model listing fails, and `default_aux_model` feeds Hermes' auxiliary-model
+ladder — Hermes consumes both from the profile by design.
 
 ### Account usage
 
 `/usage` calls `GET /api/v1/credits` for the wallet balance and
 `GET /api/v1/key` for the key's daily USD cap (resets 00:00 UTC). Both are
-best-effort: the hook returns nothing rather than failing.
+best-effort: the hook returns nothing rather than failing. The two advanced
+settings above (Cost API base URL, timeout) apply to these calls only.
+
+## Privacy / network
+
+The plugin only talks to Experiential Labs hosts (aside from any base URL you
+configure), and only when Hermes invokes it:
+
+- `https://api.experientiallabs.ai/v1` — chat completions and the model list
+  (via Hermes' own transport, `/model` picker and doctor health check)
+- `https://api.experientiallabs.ai/api/v1` — `GET /credits` and `GET /key`,
+  only when the `/usage` view asks for a snapshot
+
+No telemetry, no other endpoints. Credentials are resolved through Hermes'
+own routes (`hermes auth`, `.env`) — the plugin never reads or stores keys
+itself.
 
 ## Notes / limitations
 
@@ -82,6 +125,11 @@ The tests import the real Hermes `providers` package, so they auto-detect a
 standard `hermes-agent` install (and bridge its venv's pure-Python deps when
 pytest runs under a different interpreter). Set `HERMES_AGENT_ROOT` if your
 checkout lives elsewhere.
+
+CI runs the same suite on every push and pull request by shallow-cloning the
+`v0.21.6` release of `NousResearch/hermes-agent` (the floor `requires_hermes`
+declares), syncing its locked dependencies with uv, and running pytest against
+it (see `.github/workflows/ci.yml`).
 
 ## AI-generated
 

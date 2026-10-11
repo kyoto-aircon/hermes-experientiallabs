@@ -14,6 +14,11 @@ The builders are pure (no I/O) so they can be unit-tested directly; the fetch
 function is defensive and returns ``None`` on any failure so the caller fails
 open exactly like the dispatch boundary expects.
 
+Optional overrides (``cost_api_base``, ``usage_timeout_s``) may be set from
+the Desktop/TUI plugin settings pages; they are read through Hermes' readonly
+config loader lazily inside the fetch path and every failure — missing config,
+unexpected shape, import error — falls back to the built-in defaults.
+
 Only stdlib is imported at module load. ``httpx`` and Hermes internals are
 imported lazily inside the fetch path.
 """
@@ -22,12 +27,21 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from math import isfinite
 from typing import Any
 
-_CREDITS_URL = "https://api.experientiallabs.ai/api/v1/credits"
-_KEY_URL = "https://api.experientiallabs.ai/api/v1/key"
-# Two sequential GETs; keep the worst case (2x) under Hermes' 10s hook deadline.
+_DEFAULT_COST_API_BASE = "https://api.experientiallabs.ai/api/v1"
+_CREDITS_URL = f"{_DEFAULT_COST_API_BASE}/credits"
+_KEY_URL = f"{_DEFAULT_COST_API_BASE}/key"
+# Per-request timeout for the two sequential GETs; the worst case (2x) must
+# stay under Hermes' 10s usage-hook deadline (2x4.5s leaves room for the
+# resolver and thread hand-off), so user-provided values above
+# ``_MAX_TIMEOUT_S`` are clamped.
 _HTTP_TIMEOUT_S = 4.0
+_MAX_TIMEOUT_S = 4.5
+# Manifest name (plugin.yaml ``name``): optional settings live under
+# ``plugins.entries.<id>.settings`` in config.yaml.
+_PLUGIN_ID = "hermes-experientiallabs"
 
 _MISSING = object()
 _ZERO = Decimal("0")
@@ -139,6 +153,56 @@ def build_daily_cap_window(payload: Any, *, now: datetime | None = None) -> Any 
                    detail=f"${_usd(used)} of ${_usd(limit)} used")
 
 
+def _cost_urls(cost_api_base: Any) -> tuple[str, str]:
+    """``(credits_url, key_url)`` for a Cost API base, defaulting fail-open."""
+    base = cost_api_base.strip().rstrip("/") if isinstance(cost_api_base, str) else ""
+    if not base:
+        return _CREDITS_URL, _KEY_URL
+    return f"{base}/credits", f"{base}/key"
+
+
+def _usage_timeout(value: Any) -> float:
+    """Per-request timeout from a raw settings value, clamped and fail-open."""
+    if value is None or isinstance(value, bool):
+        return _HTTP_TIMEOUT_S
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return _HTTP_TIMEOUT_S
+    if not timeout > 0 or not isfinite(timeout):
+        return _HTTP_TIMEOUT_S
+    # Two sequential GETs must fit Hermes' 10s usage-hook deadline.
+    return min(timeout, _MAX_TIMEOUT_S)
+
+
+def resolve_usage_settings() -> tuple[str, str, float]:
+    """``(credits_url, key_url, timeout)`` for the fetch, fail-open.
+
+    Reads ``plugins.entries.hermes-experientiallabs.settings`` — the values
+    saved by the Desktop/TUI plugin settings pages — through Hermes' readonly
+    config loader. The import is lazy (module load stays stdlib-only) and any
+    failure falls back to the built-in defaults: the usage hook must fail
+    open, never raise.
+    """
+    settings: Any = None
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        settings = (
+            load_config_readonly()
+            .get("plugins", {})
+            .get("entries", {})
+            .get(_PLUGIN_ID, {})
+            .get("settings")
+        )
+    except Exception:  # noqa: BLE001 - optional overrides must fail open
+        settings = None
+    if not isinstance(settings, dict):
+        return _CREDITS_URL, _KEY_URL, _HTTP_TIMEOUT_S
+    credits_url, key_url = _cost_urls(settings.get("cost_api_base"))
+    return credits_url, key_url, _usage_timeout(settings.get("usage_timeout_s"))
+
+
 def _get_json(client: Any, url: str, headers: dict[str, str]) -> Any | None:
     """GET *url* returning the decoded JSON, or ``None`` on any failure."""
     try:
@@ -154,17 +218,17 @@ def fetch_experientiallabs_account_usage(
     provider_name: str, *, base_url: str | None = None, api_key: str | None = None
 ) -> Any | None:
     """Build the ``/usage`` snapshot for Experiential Labs, or ``None``."""
-    import httpx
-
-    from agent.account_usage import AccountUsageSnapshot
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-
     runtime = None
     try:
+        import httpx
+
+        from agent.account_usage import AccountUsageSnapshot
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
         runtime = resolve_runtime_provider(
             requested=provider_name, explicit_base_url=base_url, explicit_api_key=api_key
         )
-    except Exception:  # noqa: BLE001 - missing/disabled credential must fail open
+    except Exception:  # noqa: BLE001 - imports and credentials must fail open
         return None
 
     token = str((runtime or {}).get("api_key", "") or "").strip()
@@ -172,10 +236,11 @@ def fetch_experientiallabs_account_usage(
         return None
 
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    credits_url, key_url, timeout_s = resolve_usage_settings()
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT_S, follow_redirects=True) as client:
-            credits = _get_json(client, _CREDITS_URL, headers)
-            key = _get_json(client, _KEY_URL, headers)
+        with httpx.Client(timeout=timeout_s, follow_redirects=True) as client:
+            credits = _get_json(client, credits_url, headers)
+            key = _get_json(client, key_url, headers)
     except Exception:  # noqa: BLE001 - fail open
         return None
 
