@@ -45,4 +45,4 @@ jobs:
         working-directory: ${{ env.HERMES_AGENT_ROOT }}
 
       - name: Run plugin tests
-        run: "$HERMES_AGENT_ROOT/.venv/bin/python" -m pytest
+        run: '"$HERMES_AGENT_ROOT/.venv/bin/python" -m pytest'
