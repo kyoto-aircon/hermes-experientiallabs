@@ -22,7 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      HERMES_AGENT_ROOT: ${{ runner.temp }}/hermes-agent
+      # github.workspace, not runner.temp: the runner context is not
+      # available in job-level env (only in step env/with).
+      HERMES_AGENT_ROOT: ${{ github.workspace }}/hermes-agent
     steps:
       - uses: actions/checkout@v5
 
@@ -35,7 +37,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-          cache-dependency-glob: "${{ runner.temp }}/hermes-agent/uv.lock"
+          cache-dependency-glob: "${{ github.workspace }}/hermes-agent/uv.lock"
 
       - name: Sync hermes-agent environment
         # Python 3.14: Hermes pins its core dependencies for 3.14 only.
