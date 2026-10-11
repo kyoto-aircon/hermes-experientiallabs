@@ -8,8 +8,8 @@
 # Hermes Agent dependency.
 
 [project]
-name = "experientiallabs-provider"
-version = "0.1.0"
+name = "hermes-experientiallabs"
+version = "0.2.0"
 description = "Experiential Labs (experientiallabs.ai) model provider for Hermes Agent"
 requires-python = ">=3.11"
 

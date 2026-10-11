@@ -16,10 +16,10 @@ profile automatically wires it into:
 ## Install
 
 ```bash
-hermes plugins install https://github.com/kyoto-aircon/explabs-provider-plugin
+hermes plugins install https://github.com/kyoto-aircon/hermes-experientiallabs
 ```
 
-Or drop this directory into `$HERMES_HOME/plugins/experientiallabs-provider/`
+Or drop this directory into `$HERMES_HOME/plugins/hermes-experientiallabs/`
 (the manifest declares `kind: model-provider`, so provider discovery finds it).
 
 Then add your key:

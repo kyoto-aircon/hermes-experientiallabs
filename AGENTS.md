@@ -11,7 +11,7 @@ gateway) as a first-class provider. Hermes loads it via plugin discovery
 
 ## Layout
 
-- `plugin.yaml` — manifest: `name: experientiallabs-provider`, `kind:
+- `plugin.yaml` — manifest: `name: hermes-experientiallabs`, `kind:
   model-provider`, `version` (bump for releases).
 - `__init__.py` — the provider profile (`ExperientialLabsProfile`): env vars,
   base URL, fallback models, aux model, and the `fetch_account_usage` hook.
