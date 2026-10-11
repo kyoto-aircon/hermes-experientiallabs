@@ -82,7 +82,7 @@ the environment in-process only.
 
 ## Related
 
-`epicawesomesauce/opencode-experientiallabs` integrates the same gateway into
+`kyoto-aircon/opencode-experientiallabs` integrates the same gateway into
 OpenCode (TypeScript); the gateway API shapes and quirks documented there
 apply here too. `rarf/hermes-quota-plugin` has a quota-widget provider for
 Experiential Labs (see its `docs/add-provider.md`).
