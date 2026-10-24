@@ -18,6 +18,8 @@ profile automatically wires it into:
 ## Install
 
 ```bash
+hermes plugins install hermes-experientiallabs   # official Hermes plugin catalog (community tier)
+# or install straight from the repo:
 hermes plugins install https://github.com/kyoto-aircon/hermes-experientiallabs
 ```
 
