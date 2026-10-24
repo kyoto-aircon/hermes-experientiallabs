@@ -1,40 +1,25 @@
 name: hermes-experientiallabs
 kind: model-provider
-version: 0.3.0
+version: 0.4.0
 description: Experiential Labs — OpenAI-compatible multi-model gateway
 author: Spheraz
 license: MIT
 homepage: https://github.com/kyoto-aircon/hermes-experientiallabs
 tags: [experientiallabs, model-provider, openai-compatible]
 requires_hermes: ">=0.21.6"
+# Credentials are not settings. Hermes' native Settings → Providers → API keys
+# tab (and `hermes auth add experientiallabs`) edits EXPLABS_API_KEY and the
+# EXPLABS_BASE_URL override directly from the profile's env_vars, so there is
+# nothing to duplicate here. Only the /usage knobs below have no native home.
 config_schema:
-  api_key:
-    type: secret
-    env: EXPLABS_API_KEY
-    label: API key
-    description: >-
-      Gateway key from platform.experientiallabs.ai (Settings → API keys).
-      Stored in .env as EXPLABS_API_KEY and used by every Hermes surface.
-      Equivalent to `hermes auth add experientiallabs`.
-  base_url:
-    type: secret
-    env: EXPLABS_BASE_URL
-    label: Chat API base URL override
-    description: >-
-      Advanced — only set this if you route chat traffic through a mirror or
-      proxy. Stored in .env as EXPLABS_BASE_URL (Hermes' native base-URL
-      override) and honoured by chat, the /model picker and doctor. The usage
-      fetch resolves its credentials through it but always calls the Cost API
-      base URL below. Values are masked in this UI because it is a credential
-      field.
   cost_api_base:
     type: str
     default: "https://api.experientiallabs.ai/api/v1"
     label: Cost API base URL
     description: >-
       Advanced — base URL of the Cost API used for the /usage view. Only set
-      this if the base URL override above points at a mirror that also serves
-      the Cost API (GET /credits and GET /key).
+      this if the EXPLABS_BASE_URL chat mirror also serves the Cost API
+      (GET /credits and GET /key).
   usage_timeout_s:
     type: float
     default: 4.0

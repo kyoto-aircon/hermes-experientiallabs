@@ -1,8 +1,10 @@
 """Contract tests for the plugin manifest and its ``config_schema``.
 
-Pins the settings-page surface (Hermes #64165): keys, types, secret env
-names and defaults. Uses Hermes' own manifest loader so the test fails when
-the manifest drifts from what Hermes actually parses.
+Pins the settings-page surface (Hermes #64165): keys, types and defaults —
+both remaining fields are the ``/usage`` knobs, because provider credentials are
+edited through Hermes' native Settings → Providers → API keys tab. Uses Hermes'
+own manifest loader so the test fails when the manifest drifts from what Hermes
+actually parses.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ class TestManifestFields:
     def test_identity(self, manifest):
         assert manifest.name == "hermes-experientiallabs"
         assert manifest.kind == "model-provider"
-        assert manifest.version == "0.3.0"
+        assert manifest.version == "0.4.0"
         assert manifest.description
         assert manifest.author == "Spheraz"
 
@@ -39,8 +41,10 @@ class TestManifestFields:
         assert manifest.tags == ["experientiallabs", "model-provider", "openai-compatible"]
 
     def test_requires_hermes_floor_is_settings_ui_release(self, manifest):
-        # The config_schema settings pages shipped in v0.21.6; the floor must
-        # never be newer than the current Hermes release (catalog rule 14).
+        # The config_schema settings pages shipped in v0.21.6, and so did the
+        # ProviderProfile.classify_api_error field this profile passes; the
+        # floor must never be newer than the current Hermes release (catalog
+        # rule 14).
         assert manifest.requires_hermes == ">=0.21.6"
 
     def test_no_requires_env_gate(self, manifest):
@@ -61,22 +65,24 @@ class TestManifestFields:
 
 class TestConfigSchema:
     def test_keys_and_types(self, manifest):
+        # Credentials are not settings: EXPLABS_API_KEY and EXPLABS_BASE_URL are
+        # declared via env_vars and edited in Hermes' native Providers → API keys
+        # tab. Only the two /usage knobs belong to the plugin settings page.
         assert set(manifest.config_schema) == {
-            "api_key",
-            "base_url",
             "cost_api_base",
             "usage_timeout_s",
         }
-        assert manifest.config_schema["api_key"]["type"] == "secret"
-        assert manifest.config_schema["base_url"]["type"] == "secret"
         assert manifest.config_schema["cost_api_base"]["type"] == "str"
         assert manifest.config_schema["usage_timeout_s"]["type"] == "float"
 
-    def test_secret_fields_write_the_profile_env_vars(self, manifest):
-        # Only secret-typed fields write .env entries, so the two env-var
-        # overrides must be secrets named exactly as the profile declares.
-        assert manifest.config_schema["api_key"]["env"] == "EXPLABS_API_KEY"
-        assert manifest.config_schema["base_url"]["env"] == "EXPLABS_BASE_URL"
+    def test_no_secret_fields_duplicate_the_native_key_tab(self, manifest):
+        # A secret field would be a second, unsynced editor of the same .env
+        # line the Providers → API keys tab owns.
+        assert not [
+            key
+            for key, spec in manifest.config_schema.items()
+            if str(spec.get("type")).lower() == "secret"
+        ]
 
     def test_defaults(self, manifest):
         assert (

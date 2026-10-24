@@ -13,16 +13,19 @@ gateway) as a first-class provider. Hermes loads it via plugin discovery
 
 - `plugin.yaml` — manifest: `name: hermes-experientiallabs`, `kind:
   model-provider`, `version` (bump for releases), and the `config_schema`
-  that renders the Desktop/TUI settings pages.
+  that renders the Desktop settings page — only the two `/usage` knobs.
 - `__init__.py` — the provider profile (`ExperientialLabsProfile`): env vars,
-  base URL, fallback models, aux model, and the `fetch_account_usage` hook.
+  base URL, fallback models, aux model, the `fetch_account_usage` hook, and
+  `classify_experientiallabs_api_error` (the `classify_api_error` hook that
+  keeps transient gateway-guardrail 400s retryable).
 - `account_usage.py` — the `/usage` snapshot: wallet balance from
   `GET /api/v1/credits` and the key's daily USD cap from `GET /api/v1/key`
   (resets 00:00 UTC); plus the optional settings reader for the usage fetch.
 - `conftest.py` — pytest bootstrap: finds a real `hermes-agent` checkout,
   bridges its venv deps, and loads the plugin as a package the way Hermes'
   provider discovery does.
-- `tests/` — `test_profile.py`, `test_account_usage.py`, `test_manifest.py`.
+- `tests/` — `test_profile.py`, `test_account_usage.py`, `test_manifest.py`,
+  `test_classify.py`.
 - `pyproject.toml` — pytest config plus a minimal `[project]` table. There is
   intentionally no build backend; the `[project]` version only exists because
   Hermes' plugin manager copies this file into a uv workspace and `uv lock`
@@ -56,16 +59,19 @@ Hermes checkout discovery for tests: `HERMES_AGENT_ROOT`, then
 - **Budget.** Two sequential GETs with 4s timeouts each — Hermes' hook
   deadline is 10s. The optional `usage_timeout_s` setting clamps at 4.5s so
   two worst-case GETs still fit.
-- **Optional settings.** `plugin.yaml` declares a `config_schema`; Desktop
-  (Settings → Plugins) and the TUI Plugins hub render it automatically.
-  Secrets (`api_key`, `base_url`) write `.env` entries via Hermes' credential
-  route (`EXPLABS_API_KEY`, `EXPLABS_BASE_URL`) — only secret-typed fields
-  can write env vars. Non-secrets (`cost_api_base`, `usage_timeout_s`) live
+- **Credentials are not settings.** Hermes' native Settings → Providers →
+  API keys tab (and the wizard / `hermes auth add` / `/model` in the TUI) edits
+  `EXPLABS_API_KEY` and the `EXPLABS_BASE_URL` override straight from the
+  profile's `env_vars` — the trailing `*_BASE_URL` entry renders as the
+  advanced base-URL field. Do not add secret `config_schema` fields: they are
+  a second, unsynced editor of the same `.env` lines (Desktop-only anyway —
+  the TUI plugins hub does not render `config_schema`).
+- **Optional settings.** `plugin.yaml` declares a `config_schema` for the two
+  knobs with no native home (`cost_api_base`, `usage_timeout_s`). They live
   under `plugins.entries.hermes-experientiallabs.settings` in `config.yaml`,
   read lazily and fail-open by `resolve_usage_settings` in `account_usage.py`
-  (the usage timeout clamps to 4.5s so 2 GETs fit the 10s deadline). Secrets
-  apply after a Hermes restart; the non-secret settings are read per `/usage`
-  call. Do NOT expose `aux_model` or
+  (the usage timeout clamps to 4.5s so 2 GETs fit the 10s deadline). Settings
+  apply per `/usage` call. Do NOT expose `aux_model` or
   `fallback_models` as settings — Hermes consumes them from the profile as
   provider metadata (aux ladder, curated picker floor); there is no
   Hermes-side user override by design.
@@ -93,6 +99,17 @@ Hermes checkout discovery for tests: `HERMES_AGENT_ROOT`, then
 - `prompt_cache_key` is deliberately not advertised: the gateway treats it as
   an affinity hint, so there is nothing to gain and it avoids sending an
   unknown top-level field.
+- The hosted gateway's content-inspection / guardrail service intermittently
+  fails closed with HTTP 400 before the request reaches a model: code
+  `unsupported_capability` ("Content inspection does not support this complete
+  request. Use a supported context or modality.") or code `content_filter`
+  ("A gateway guardrail could not complete this request."). Identical requests
+  pass in other windows (verified in agent.log 2026-10-24: ~32 consecutive
+  successes then every turn failing). `classify_experientiallabs_api_error`
+  marks exactly those two signatures retryable so Hermes backs off and retries;
+  other 400s keep the built-in classification. Report sustained outages to
+  Experiential Labs (Discord: `discord.gg/B6sM8xTVwU`) — do not retry-loop or
+  rewrite requests in the plugin.
 
 ## Environment
 

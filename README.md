@@ -48,23 +48,25 @@ hermes -z -m experientiallabs:qwen3.8-27b "hello"
 Everything is optional — the defaults work against the public gateway, and an
 unconfigured plugin is simply a provider without a key.
 
-**Where to configure:** Desktop → **Settings → Plugins → Experiential Labs**,
-or the TUI/CLI **Plugins hub**. Both render the same form from the plugin
-manifest's `config_schema`. Secrets are read from `.env` at process start, so
-they apply after a Hermes restart; the Cost API settings are read on each
-`/usage` call and apply immediately.
+**Credentials** are not plugin settings. Set the key in Desktop → **Settings →
+Providers → API keys** (the plugin's provider card appears there natively), or
+with `hermes auth add experientiallabs`, the setup wizard, or `/model` in the
+TUI. That card also carries the advanced **base URL override**
+(`EXPLABS_BASE_URL`) — nothing is duplicated in the plugin's own form.
+
+**The two `/usage` knobs** live in Desktop → **Settings → Plugins →
+Experiential Labs**. The TUI plugins hub does not render plugin forms; set
+these in `config.yaml` there.
 
 | Setting | Kind | Default | What it does |
 | --- | --- | --- | --- |
-| **API key** | secret | — | Gateway key from [platform.experientiallabs.ai](https://platform.experientiallabs.ai/settings/api-keys). Written to `.env` as `EXPLABS_API_KEY`; equivalent to `hermes auth add experientiallabs`. |
-| **Chat API base URL override** | secret | — | **Advanced** — only for routing chat traffic through a mirror or proxy. Written to `.env` as `EXPLABS_BASE_URL` (Hermes' native base-URL override; honoured by chat, `/model` and doctor). The usage fetch resolves credentials through it but always calls the Cost API base URL. Masked in the UI because only credential fields can write env vars. |
-| **Cost API base URL** | string | `https://api.experientiallabs.ai/api/v1` | **Advanced** — base for the `/usage` endpoints. Only set this if the base URL override points at a mirror that also serves the Cost API (`GET /credits`, `GET /key`). |
+| **Cost API base URL** | string | `https://api.experientiallabs.ai/api/v1` | **Advanced** — base for the `/usage` endpoints. Only set this if the `EXPLABS_BASE_URL` chat mirror also serves the Cost API (`GET /credits`, `GET /key`). |
 | **Usage fetch timeout (seconds)** | float | `4.0` | **Advanced** — per-request timeout for the two `/usage` GETs. Hermes allows the usage hook 10s total, so values above `4.5` are clamped. |
 
-The two secret fields never touch `config.yaml`; Hermes stores them in `.env`
-through its credential route. The non-secret fields live under
-`plugins.entries.hermes-experientiallabs.settings` in `config.yaml` if you
-prefer editing files directly.
+These live under `plugins.entries.hermes-experientiallabs.settings` in
+`config.yaml` if you prefer editing files directly. The key and base URL are
+read from `.env` at process start (so they apply after a Hermes restart); the
+two knobs are read on each `/usage` call.
 
 ### Profile defaults (not settings)
 
@@ -113,6 +115,13 @@ itself.
 - `prompt_cache_key` is deliberately not advertised (`supports_prompt_cache_key`
   is left off); the gateway treats it as an affinity hint, so there is nothing
   to gain and it avoids sending an unknown top-level field.
+- The gateway's content-inspection/guardrail service intermittently fails
+  closed with HTTP 400 (codes `unsupported_capability` and `content_filter`)
+  before a request reaches a model; identical requests succeed in other
+  windows. The profile classifies exactly those two signatures as retryable,
+  so Hermes backs off and retries instead of ending the turn. Real content
+  refusals keep the built-in non-retryable verdict. If an outage persists,
+  report it to Experiential Labs ([Discord](https://discord.gg/B6sM8xTVwU)).
 
 ## Development
 
