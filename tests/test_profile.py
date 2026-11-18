@@ -16,6 +16,7 @@ KNOWN_FALLBACKS = {
     "gpt-6-luna",
     "claude-haiku-4.5",
     "gpt-6-astra",
+    "gemma-4-26b-a4b-it",
 }
 
 
@@ -85,21 +86,34 @@ class TestModelDefaults:
     def test_vision_model_uses_aux(self, profile):
         assert profile.default_vision_model() == "glm-5.3-flash"
 
-    def test_fallback_models_are_the_curated_cheap_set(self, profile):
-        assert set(profile.fallback_models) == KNOWN_FALLBACKS
-        assert len(profile.fallback_models) == len(set(profile.fallback_models))
+    def test_fallback_models_are_the_curated_cheap_set(self, plugin):
+        # Pin the repo's profile: provider discovery may re-register an older
+        # installed copy from $HERMES_HOME (same guard as TestHermesWiring).
+        fallbacks = plugin.experientiallabs.fallback_models
+        assert set(fallbacks) == KNOWN_FALLBACKS
+        assert len(fallbacks) == len(set(fallbacks))
 
     def test_fallback_models_do_not_include_aux(self, profile):
         assert profile.default_aux_model not in profile.fallback_models
 
 
 class TestHooks:
-    def test_fetch_models_uses_default_openai_listing(self, profile):
+    def test_fetch_models_overrides_the_base_listing(self, plugin):
         from providers.base import ProviderProfile
 
-        # The gateway serves GET /v1/models in standard OpenAI shape, so the
-        # base implementation must not be shadowed.
-        assert type(profile).fetch_models is ProviderProfile.fetch_models
+        # The override merges the dynamic :free promo variants into the live
+        # OpenAI-shaped listing (behaviour pinned in test_free_models.py).
+        # Assert on the repo's profile: an installed copy may shadow the
+        # registered lookup (same guard as TestHermesWiring).
+        assert type(plugin.experientiallabs).fetch_models is not ProviderProfile.fetch_models
+
+    def test_get_usage_cost_is_overridden(self, plugin):
+        from providers.base import ProviderProfile
+
+        assert (
+            type(plugin.experientiallabs).get_usage_cost
+            is not ProviderProfile.get_usage_cost
+        )
 
     def test_account_usage_hook_is_overridden(self, profile):
         from providers.base import ProviderProfile

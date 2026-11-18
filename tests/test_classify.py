@@ -139,6 +139,66 @@ class TestOtherErrorsKeepTheBuiltinVerdict:
         )
 
 
+class TestRetiredFreeRoutes:
+    """A 404 on a ``:free`` variant means the promotion retired the route.
+
+    Mirrors the built-in Nous behaviour for retired free routes: the slug is
+    dead for every credential, so Hermes should fall back, not retry-loop.
+    """
+
+    def test_404_on_free_variant_falls_back(self, plugin):
+        verdict = plugin.classify_experientiallabs_api_error(
+            None, status_code=404, model="gpt-6.2-astra:free"
+        )
+        assert verdict == {"reason": "model_not_found", "should_fallback": True}
+
+    def test_404_on_paid_model_keeps_builtin_handling(self, plugin):
+        assert (
+            plugin.classify_experientiallabs_api_error(
+                None, status_code=404, model="gpt-6.2-astra"
+            )
+            is None
+        )
+
+    def test_404_without_model_keeps_builtin_handling(self, plugin):
+        assert plugin.classify_experientiallabs_api_error(None, status_code=404) is None
+
+    def test_guardrail_400_on_free_variant_still_retries(self, plugin):
+        # The retirement rule is 404-only; transient guardrail 400s keep
+        # their retryable verdict even on a :free route.
+        verdict = plugin.classify_experientiallabs_api_error(
+            None,
+            status_code=400,
+            error_code="content_filter",
+            message=GUARDRAIL_MESSAGE.lower(),
+            model="gpt-6.2-astra:free",
+        )
+        assert verdict == {"reason": "content_policy_blocked", "retryable": True}
+
+    def test_hermes_classifier_falls_back_on_retired_free_route(self, plugin, monkeypatch):
+        import providers
+
+        monkeypatch.setattr(
+            providers,
+            "get_provider_profile",
+            lambda name: plugin.experientiallabs if name == "experientiallabs" else None,
+        )
+        from agent.error_classifier import classify_api_error
+
+        class FakeNotFound(Exception):
+            def __init__(self):
+                super().__init__("404 page not found")
+                self.status_code = 404
+                self.body = {}
+
+        classified = classify_api_error(
+            FakeNotFound(), provider="experientiallabs", model="gpt-6.2-astra:free"
+        )
+        assert classified.reason.value == "model_not_found"
+        assert classified.retryable is False
+        assert classified.should_fallback is True
+
+
 class TestHermesWiring:
     def test_profile_exposes_the_hook(self, plugin):
         # Provider discovery layers $HERMES_HOME copies over this repo, so the

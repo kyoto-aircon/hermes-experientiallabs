@@ -11,7 +11,8 @@ profile automatically wires it into:
 
 - the auth registry and setup wizard
 - Desktop **Settings → Providers** (keys tab) and `hermes model`
-- the `/model` picker (live `GET /v1/models`, with a curated offline fallback)
+- the `/model` picker (live `GET /v1/models` + dynamic `:free` promo variants,
+  with a curated offline fallback)
 - `hermes doctor` (a `/models` health check)
 - `/usage` (wallet balance + daily key cap)
 
@@ -44,6 +45,27 @@ hermes -z -m experientiallabs:qwen3.8-27b "hello"
 ```
 
 `/model` accepts the slug directly, e.g. `experientiallabs:deepseek-v4-flash`.
+
+### Free models
+
+The gateway has two kinds of free access, **credited differently**:
+
+- **Free models** — catalog routes priced at $0 (e.g. `gemma-4-26b-a4b-it`,
+  which is in the curated fallback). Stable; they bill $0 against the wallet
+  like any other route.
+- **`:free` variants** — promotional routes (`<slug>:free`) that draw on a
+  separate **free allowance** (per-promotion hourly/daily token quotas or USD
+  caps), *not* wallet credits. They are **dynamic**: promotions appear and
+  expire, so the valid slugs change over time.
+
+The plugin tracks the dynamic set instead of hardcoding it: every live model
+fetch also reads the keyless public catalog's `promotions` array
+(`GET /api/models?limit=1`, ~12 KB) and merges the current `<slug>:free`
+variants into the picker. When a promotion retires a route, a 404 on the
+`:free` slug is classified as a retired model so Hermes falls back to another
+model instead of retry-looping — the same behaviour the built-in Nous
+provider has for its free tier. `:free` turns are reported as **$0 wallet
+spend** ("free allowance") in local cost attribution.
 
 ## Configuration
 
@@ -81,7 +103,7 @@ they stay pinned in the profile like every bundled provider:
 | API key env vars | `EXPLABS_API_KEY`, then `EXPERIENTIALLABS_API_KEY` |
 | API mode | `chat_completions` |
 | Auxiliary model | `glm-5.3-flash` (cheap, vision-capable) |
-| Curated fallbacks | `qwen3.8-27b`, `deepseek-v4-flash`, `gpt-6-luna`, `claude-haiku-4.5`, `gpt-6-astra` |
+| Curated fallbacks | `qwen3.8-27b`, `deepseek-v4-flash`, `gpt-6-luna`, `claude-haiku-4.5`, `gpt-6-astra`, `gemma-4-26b-a4b-it` ($0 tier) |
 
 `fallback_models` is the curated model-picker floor Hermes shows when live
 model listing fails, and `default_aux_model` feeds Hermes' auxiliary-model
@@ -101,6 +123,9 @@ configure), and only when Hermes invokes it:
 
 - `https://api.experientiallabs.ai/v1` — chat completions and the model list
   (via Hermes' own transport, `/model` picker and doctor health check)
+- `https://api.experientiallabs.ai/api/models?limit=1` — keyless public
+  catalog probe for the current `:free` promotions, only when the picker
+  fetches the live model list (fails open; ~12 KB)
 - `https://api.experientiallabs.ai/api/v1` — `GET /credits` and `GET /key`,
   only when the `/usage` view asks for a snapshot
 

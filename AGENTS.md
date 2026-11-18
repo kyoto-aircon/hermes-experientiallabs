@@ -21,11 +21,14 @@ gateway) as a first-class provider. Hermes loads it via plugin discovery
 - `account_usage.py` — the `/usage` snapshot: wallet balance from
   `GET /api/v1/credits` and the key's daily USD cap from `GET /api/v1/key`
   (resets 00:00 UTC); plus the optional settings reader for the usage fetch.
+- `free_models.py` — dynamic `:free` discovery: pure builders
+  (`free_suffix_slugs`, `merge_free_slugs`) plus the fail-open keyless probe
+  (`fetch_free_suffix_slugs`) of the public catalog's `promotions` array.
 - `conftest.py` — pytest bootstrap: finds a real `hermes-agent` checkout,
   bridges its venv deps, and loads the plugin as a package the way Hermes'
   provider discovery does.
 - `tests/` — `test_profile.py`, `test_account_usage.py`, `test_manifest.py`,
-  `test_classify.py`.
+  `test_classify.py`, `test_free_models.py`.
 - `pyproject.toml` — pytest config plus a minimal `[project]` table. There is
   intentionally no build backend; the `[project]` version only exists because
   Hermes' plugin manager copies this file into a uv workspace and `uv lock`
@@ -75,6 +78,15 @@ Hermes checkout discovery for tests: `HERMES_AGENT_ROOT`, then
   `fallback_models` as settings — Hermes consumes them from the profile as
   provider metadata (aux ladder, curated picker floor); there is no
   Hermes-side user override by design.
+- **Free models are two kinds, credited differently.** "Free" models are
+  stable $0 catalog routes (wallet-billed at $0); `:free` variants are
+  promotional routes drawn from a separate free allowance (hourly/daily token
+  quotas or USD caps), NOT wallet credits. Never hardcode `:free` slugs —
+  promotions expire, so they enter the picker only via the live promotions
+  probe (`free_models.py`), `get_usage_cost` reports them as $0 "free
+  allowance", and a 404 on a `:free` slug classifies as `model_not_found`
+  with fallback (retired route, dead for every credential — same rule as the
+  built-in Nous provider's retired free routes).
 - **Version sync.** Bump `plugin.yaml` `version` and `pyproject.toml`
   `[project]` version together; `test_manifest.py` cross-checks both (and
   that manifest defaults match the module constants).
@@ -89,10 +101,17 @@ Hermes checkout discovery for tests: `HERMES_AGENT_ROOT`, then
   Completions, `GET /v1/models`); Cost API
   `https://api.experientiallabs.ai/api/v1` (`/credits`, `/key`); public
   catalog `GET /api/models?limit=1000` (keyless; default limit is 500).
+  `GET /api/models?limit=1` still returns the FULL `promotions` array
+  (~12 KB vs ~4 MB) — that is the cheap probe `free_models.py` uses.
 - Commits: short, lowercase, imperative ("add x", "fix y").
 
 ## Known gateway quirks (do not "fix" these in the plugin)
 
+- The `promotions` array is the only advertisement of `:free` variants (they
+  are not catalog rows) and can lag reality: an expired label ("free until
+  Nov 14") was still listed days later. The gateway is authoritative — a dead
+  `:free` route 404s, and the classify hook turns that into fallback. Do not
+  try to parse expiry dates out of promo labels.
 - Some routes pin sampling parameters (the Claude 5 family pins
   `temperature`), so auxiliary calls that send a temperature can 400 —
   gateway behaviour, not a plugin setting.
