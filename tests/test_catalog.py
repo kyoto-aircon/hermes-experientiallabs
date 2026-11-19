@@ -323,15 +323,17 @@ class TestCostAttribution:
         assert "BYOK" in r2.notes[0]
 
     def test_rate_card_fallback_with_cache_and_1h_ttl(self, plugin, catalog):
-        from agent.usage_pricing import CanonicalUsage
-
         catalog.seed_catalog_from_v1_items(LIVE_V1_MODELS, save_disk=False)
-        # claude-opus-5.5: $4/M in, $0.20/M cached, $5/M 5m write, $8/M 1h write, $20/M out
-        usage = CanonicalUsage(
+        # claude-opus-5.5: $4/M in, $0.20/M cached, $5/M 5m write, $8/M 1h write, $20/M out.
+        # SimpleNamespace keeps this test compatible with Hermes v0.21.6, where
+        # CanonicalUsage did not yet declare cache_write_by_ttl.
+        usage = types.SimpleNamespace(
             input_tokens=100_000,        # $0.40
             cache_read_tokens=500_000,   # $0.10
             cache_write_tokens=100_000,  # 50k 1h ($0.40) + 50k 5m ($0.25) = $0.65
             output_tokens=10_000,        # $0.20
+            reasoning_tokens=0,
+            raw_usage=None,
             cache_write_by_ttl=(("1h", 50_000), ("5m", 50_000)),
         )
         result = plugin.experientiallabs.get_usage_cost("claude-opus-5.5", usage)
