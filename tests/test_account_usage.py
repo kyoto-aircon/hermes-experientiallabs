@@ -702,3 +702,48 @@ class TestFetchHook:
         assert seen["urls"] == [account_usage._CREDITS_URL, account_usage._KEY_URL]
         assert snapshot is not None
         assert _window_by_label(snapshot, "Credits") is not None
+
+
+class TestUsageParityEnhancements:
+    def test_cap_cadences_weekly_monthly_yearly(self, account_usage):
+        # Wednesday 2026-11-18 15:00 UTC -> next Monday is 2026-11-23 00:00 UTC.
+        now = datetime(2026, 11, 18, 15, 0, tzinfo=timezone.utc)
+        w = account_usage.build_daily_cap_window(
+            {"limit": 20, "limit_remaining": 15, "limit_reset": "weekly"}, now=now
+        )
+        assert w.label == "Weekly key cap"
+        assert w.reset_at == datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc)
+
+        m = account_usage.build_daily_cap_window(
+            {"limit": 100, "limit_remaining": 50, "limit_reset": "monthly"}, now=now
+        )
+        assert m.label == "Monthly key cap"
+        assert m.reset_at == datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc)
+
+        y = account_usage.build_daily_cap_window(
+            {"limit": 500, "limit_remaining": 500, "limit_reset": "yearly"}, now=now
+        )
+        assert y.label == "Yearly key cap"
+        assert y.reset_at == datetime(2027, 1, 1, 0, 0, tzinfo=timezone.utc)
+
+    def test_usage_details_include_depleted_warning_and_spend_rollups(self, account_usage):
+        details = account_usage.build_usage_details(
+            {"data": {"total_credits": "10.00", "total_usage": "10.00"}},
+            {
+                "data": {
+                    "usage_daily": 0.02,
+                    "usage_weekly": 3.05,
+                    "usage_monthly": 62.56,
+                }
+            },
+        )
+        assert any("credits depleted" in line for line in details)
+        assert any(
+            line == "Key spend: $0.02 today · $3.05 7d · $62.56 30d"
+            for line in details
+        )
+
+    def test_extract_plan_label(self, account_usage):
+        assert account_usage.extract_plan_label({"data": {"is_free_tier": True}}) == "Free tier"
+        assert account_usage.extract_plan_label({"data": {"is_free_tier": False}}) is None
+        assert account_usage.extract_plan_label(None) is None

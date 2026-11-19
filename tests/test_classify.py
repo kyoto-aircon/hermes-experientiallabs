@@ -257,3 +257,94 @@ class TestHermesWiring:
         classified = self._classify(plugin, monkeypatch, "content_filter", refusal)
 
         assert classified.retryable is False
+
+
+class TestGatewayErrorCodes:
+    """Documented Experiential Labs error codes map cleanly to Hermes FailoverReasons."""
+
+    @pytest.mark.parametrize(
+        "status,code,body,expected_reason,retryable,fallback",
+        [
+            (400, "refusal", None, "content_policy_blocked", False, None),
+            (400, "model_route_unavailable", None, "model_not_found", False, True),
+            (400, "model_has_no_fast_path", None, "model_not_found", False, True),
+            (400, "capability_requires_purchase", None, "billing", False, True),
+            (400, "provider_account_quota", None, "billing", False, True),
+            (400, "provider_credential_rejected", None, "auth", False, True),
+            (402, "card_required", None, "billing", False, True),
+            (402, "org_under_review", None, "billing", False, True),
+            (402, "promotion_ended", None, "billing", False, True),
+            (403, "zdr_required", None, "provider_policy_blocked", False, True),
+            (403, "needs_subscription", None, "provider_policy_blocked", False, None),
+            (403, "model_not_granted", None, "model_entitlement", False, True),
+            (403, "model_blocked_for_org", None, "model_entitlement", False, True),
+            (403, "model_location_not_supported", None, "model_entitlement", False, True),
+            (403, "uncensored_access_suspended", None, "model_entitlement", False, True),
+            (451, "model_unavailable_in_region", None, "model_entitlement", False, True),
+            (409, "idempotency_replay_unavailable", None, "format_error", False, None),
+            (500, "idempotency_replay_unavailable", None, "format_error", False, None),
+            (429, "insufficient_quota", None, "billing", False, True),
+            (429, "promo_credits_now", None, "billing", False, True),
+            (
+                429,
+                "free_limit_reached",
+                {"error": {"code": "free_limit_reached", "type": "insufficient_quota"}},
+                "billing",
+                False,
+                True,
+            ),
+            (
+                429,
+                "free_limit_reached",
+                {"error": {"code": "free_limit_reached", "type": "rate_limit_error"}},
+                "rate_limit",
+                True,
+                True,
+            ),
+            (429, "rate_limit_exceeded", None, "rate_limit", True, None),
+            (429, "admission_capacity_exceeded", None, "rate_limit", True, None),
+            (429, "gateway_overloaded", None, "rate_limit", True, None),
+            (429, "unavailable_route", None, "overloaded", True, None),
+            (502, "all_routes_failed", None, "server_error", True, None),
+            (502, "backend_unavailable", None, "server_error", True, None),
+            (503, "model_unavailable", None, "model_not_found", False, True),
+            (503, "gateway_draining", None, "overloaded", True, None),
+            (503, "deadline_exceeded", None, "timeout", True, None),
+        ],
+    )
+    def test_documented_error_codes(
+        self, plugin, status, code, body, expected_reason, retryable, fallback
+    ):
+        verdict = plugin.classify_experientiallabs_api_error(
+            None, status_code=status, error_code=code, body=body
+        )
+        assert verdict is not None
+        assert verdict["reason"] == expected_reason
+        assert verdict["retryable"] is retryable
+        if fallback is not None:
+            assert verdict["should_fallback"] is fallback
+
+    def test_413_request_too_large_triggers_compression(self, plugin):
+        verdict = plugin.classify_experientiallabs_api_error(
+            None, status_code=413, error_code="request_too_large"
+        )
+        assert verdict == {
+            "reason": "payload_too_large",
+            "retryable": False,
+            "should_compress": True,
+        }
+
+    def test_reasoning_disable_rejection_maps_to_reasoning_mandatory(self, plugin):
+        verdict = plugin.classify_experientiallabs_api_error(
+            None,
+            status_code=400,
+            error_code="invalid_parameter",
+            body={
+                "error": {
+                    "code": "invalid_parameter",
+                    "param": "reasoning_effort",
+                    "message": "Reasoning cannot be set to none on this route.",
+                }
+            },
+        )
+        assert verdict == {"reason": "reasoning_mandatory", "retryable": True}

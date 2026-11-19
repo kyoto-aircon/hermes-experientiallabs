@@ -47,6 +47,17 @@ _MISSING = object()
 _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
 
+_CREDITS_TITLE = "Experiential Labs credits"
+_DEPLETED_LINE = (
+    "Status: credits depleted — top up at https://platform.experientiallabs.ai/credits"
+)
+_CAP_LABELS = {
+    "daily": "Daily key cap",
+    "weekly": "Weekly key cap",
+    "monthly": "Monthly key cap",
+    "yearly": "Yearly key cap",
+}
+
 
 def _to_decimal(value: Any) -> Decimal | None:
     """Parse *value* into a finite ``Decimal`` or return ``None``."""
@@ -105,6 +116,26 @@ def next_utc_midnight(now: datetime | None = None) -> datetime:
     return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
 
 
+def next_utc_reset(period: str | None, now: datetime | None = None) -> datetime:
+    """Next UTC reset boundary for a key-cap cadence (daily/weekly/monthly/yearly)."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    utc = current.astimezone(timezone.utc)
+    cadence = str(period or "daily").strip().lower()
+    if cadence == "weekly":
+        days_ahead = 7 - utc.weekday()
+        target = (utc + timedelta(days=days_ahead)).date()
+        return datetime(target.year, target.month, target.day, tzinfo=timezone.utc)
+    if cadence == "monthly":
+        year = utc.year + (1 if utc.month == 12 else 0)
+        month = 1 if utc.month == 12 else utc.month + 1
+        return datetime(year, month, 1, tzinfo=timezone.utc)
+    if cadence == "yearly":
+        return datetime(utc.year + 1, 1, 1, tzinfo=timezone.utc)
+    return next_utc_midnight(utc)
+
+
 def build_wallet_window(payload: Any) -> Any | None:
     """Wallet balance window from a ``/credits`` response, or ``None``."""
     data = _unwrap(payload)
@@ -123,7 +154,7 @@ def build_wallet_window(payload: Any) -> Any | None:
 
 
 def build_daily_cap_window(payload: Any, *, now: datetime | None = None) -> Any | None:
-    """Daily key-cap window from a ``/key`` response, or ``None`` when uncapped."""
+    """Key-cap window from a ``/key`` response, or ``None`` when uncapped."""
     data = _unwrap(payload)
     raw_limit = _pick(data, "limit", "daily_limit", "cap")
     if raw_limit is _MISSING:
@@ -132,12 +163,14 @@ def build_daily_cap_window(payload: Any, *, now: datetime | None = None) -> Any 
     if limit is None:
         return None
 
-    reset_at = next_utc_midnight(now)
+    cadence = str(data.get("limit_reset") or "daily").strip().lower()
+    label = _CAP_LABELS.get(cadence, "Daily key cap")
+    reset_at = next_utc_reset(cadence, now)
     if limit <= 0:
         # A non-positive limit is a hard $0 cap, never "unlimited". Checked
         # before requiring ``limit_remaining`` because a disabled/hard cap may
         # omit it entirely.
-        return _window(label="Daily key cap", used_percent=100.0,
+        return _window(label=label, used_percent=100.0,
                        reset_at=reset_at, detail="hard $0 cap")
 
     raw_remaining = _pick(data, "limit_remaining", "remaining", "limitRemaining")
@@ -149,8 +182,42 @@ def build_daily_cap_window(payload: Any, *, now: datetime | None = None) -> Any 
 
     used = max(_ZERO, limit - remaining)
     percent = float(max(_ZERO, min(_HUNDRED, used / limit * _HUNDRED)))
-    return _window(label="Daily key cap", used_percent=percent, reset_at=reset_at,
+    return _window(label=label, used_percent=percent, reset_at=reset_at,
                    detail=f"${_usd(used)} of ${_usd(limit)} used")
+
+
+def extract_plan_label(key_payload: Any) -> str | None:
+    """Plan badge from ``/key`` when reported (``"Free tier"`` or ``None``)."""
+    data = _unwrap(key_payload)
+    if data.get("is_free_tier") is True:
+        return "Free tier"
+    return None
+
+
+def build_usage_details(credits_payload: Any, key_payload: Any) -> tuple[str, ...]:
+    """Supplementary ``/usage`` detail lines: depleted warning + key spend rollups."""
+    lines: list[str] = []
+
+    credits_data = _unwrap(credits_payload)
+    total = _to_decimal(credits_data.get("total_credits"))
+    used = _to_decimal(credits_data.get("total_usage"))
+    if total is not None and used is not None and total > _ZERO and used >= total:
+        lines.append(_DEPLETED_LINE)
+
+    key_data = _unwrap(key_payload)
+    rollup_parts: list[str] = []
+    for field_name, suffix in (
+        ("usage_daily", "today"),
+        ("usage_weekly", "7d"),
+        ("usage_monthly", "30d"),
+    ):
+        val = _to_decimal(key_data.get(field_name))
+        if val is not None and val >= _ZERO:
+            rollup_parts.append(f"${_usd(val)} {suffix}")
+    if rollup_parts:
+        lines.append("Key spend: " + " · ".join(rollup_parts))
+
+    return tuple(lines)
 
 
 def _cost_urls(cost_api_base: Any) -> tuple[str, str]:
@@ -251,12 +318,16 @@ def fetch_experientiallabs_account_usage(
         window = builder(payload)
         if window is not None:
             windows.append(window)
-    if not windows:
+    details = build_usage_details(credits, key)
+    if not windows and not details:
         return None
 
     return AccountUsageSnapshot(
         provider=provider_name,
         source="explabs_cost_api",
         fetched_at=datetime.now(timezone.utc),
+        title=_CREDITS_TITLE,
+        plan=extract_plan_label(key),
         windows=tuple(windows),
+        details=details,
     )

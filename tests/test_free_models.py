@@ -259,12 +259,10 @@ class TestProfileFetchModels:
     """The override delegates to the base listing and merges the promo probe."""
 
     def _patch(self, monkeypatch, plugin, *, live, free):
-        from providers.base import ProviderProfile
-
         owner = sys.modules[type(plugin.experientiallabs).__module__]
         captured = {}
 
-        def fake_base(self, **kwargs):
+        def fake_catalog(**kwargs):
             captured.update(kwargs)
             return live
 
@@ -272,7 +270,7 @@ class TestProfileFetchModels:
             captured["probe_timeout"] = timeout
             return free
 
-        monkeypatch.setattr(ProviderProfile, "fetch_models", fake_base)
+        monkeypatch.setattr(owner, "fetch_v1_catalog", fake_catalog)
         monkeypatch.setattr(owner, "fetch_free_suffix_slugs", fake_probe)
         return captured
 

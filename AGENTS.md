@@ -15,12 +15,23 @@ gateway) as a first-class provider. Hermes loads it via plugin discovery
   model-provider`, `version` (bump for releases), and the `config_schema`
   that renders the Desktop settings page — only the two `/usage` knobs.
 - `__init__.py` — the provider profile (`ExperientialLabsProfile`): env vars,
-  base URL, fallback models, aux model, the `fetch_account_usage` hook, and
-  `classify_experientiallabs_api_error` (the `classify_api_error` hook that
-  keeps transient gateway-guardrail 400s retryable).
+  base URL, fallback models, dynamic aux/vision resolution, reasoning effort
+  clamping and mandatory-reasoning disable omission (`build_api_kwargs_extras`,
+  `supported_reasoning_efforts`, `setup_reasoning_efforts`, `reasoning_payload`),
+  per-request ZDR (`build_extra_body`), `X-Explabs-Session-Id` / `X-Explabs-Tags`
+  headers, live context lengths, `max_tokens_param`, `get_usage_cost`,
+  `fetch_account_usage`, `invalidate_catalog_cache`, and
+  `classify_experientiallabs_api_error`.
+- `catalog.py` — live `/v1/models` metadata layer: filters non-chat/non-tool
+  models, parses context windows, `chat_max_tokens_field`, reasoning effort
+  vocabularies, and nano-USD pricing (including cache read/write, 1h cache
+  writes, long-context tiers, and `:fast` 2x), maintains a per-home memory +
+  disk mirror cache with background async warming (never blocks hot paths),
+  and computes inline/BYOK/rate-card `CostResult` values.
 - `account_usage.py` — the `/usage` snapshot: wallet balance from
-  `GET /api/v1/credits` and the key's daily USD cap from `GET /api/v1/key`
-  (resets 00:00 UTC); plus the optional settings reader for the usage fetch.
+  `GET /api/v1/credits`, key cap with cadence-aware UTC resets
+  (`daily`/`weekly`/`monthly`/`yearly`) and spend rollups from `GET /api/v1/key`,
+  depleted-credit warning, plus the optional settings reader for the usage fetch.
 - `free_models.py` — dynamic `:free` discovery: pure builders
   (`free_suffix_slugs`, `merge_free_slugs`) plus the fail-open keyless probe
   (`fetch_free_suffix_slugs`) of the public catalog's `promotions` array.
@@ -28,7 +39,7 @@ gateway) as a first-class provider. Hermes loads it via plugin discovery
   bridges its venv deps, and loads the plugin as a package the way Hermes'
   provider discovery does.
 - `tests/` — `test_profile.py`, `test_account_usage.py`, `test_manifest.py`,
-  `test_classify.py`, `test_free_models.py`.
+  `test_classify.py`, `test_free_models.py`, `test_catalog.py`.
 - `pyproject.toml` — pytest config plus a minimal `[project]` table. There is
   intentionally no build backend; the `[project]` version only exists because
   Hermes' plugin manager copies this file into a uv workspace and `uv lock`

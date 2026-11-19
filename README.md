@@ -11,10 +11,13 @@ profile automatically wires it into:
 
 - the auth registry and setup wizard
 - Desktop **Settings → Providers** (keys tab) and `hermes model`
-- the `/model` picker (live `GET /v1/models` + dynamic `:free` promo variants,
-  with a curated offline fallback)
+- the `/model` picker (live `GET /v1/models` filtered to chat/tool-capable models + dynamic `:free` promo variants, with a curated offline fallback)
+- catalog-backed reasoning control (per-model effort clamping, mandatory-reasoning disable omission, setup effort picker)
+- conversation linking (`X-Explabs-Session-Id`), non-PII attribution tags (`X-Explabs-Tags`), and per-request ZDR (`provider.zdr`) when connector data requires it
+- accurate per-model context windows (`get_model_context_length` / `live_context_length`), `max_tokens_param`, and live aux/vision fallback
+- cost attribution (`:free` allowance $0, BYOK pass-through, inline `usage.cost` actual USD, and cached `/v1/models` nano-USD rate-card fallback)
 - `hermes doctor` (a `/models` health check)
-- `/usage` (wallet balance + daily key cap)
+- `/usage` (wallet balance, cadence-aware key cap, depleted-credit warning, and key spend rollups)
 
 ## Install
 
