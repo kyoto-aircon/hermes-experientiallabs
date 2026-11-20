@@ -31,7 +31,7 @@ class TestManifestFields:
     def test_identity(self, manifest):
         assert manifest.name == "hermes-experientiallabs"
         assert manifest.kind == "model-provider"
-        assert manifest.version == "0.6.0"
+        assert manifest.version == "0.7.0"
         assert manifest.description
         assert manifest.author == "Spheraz"
 

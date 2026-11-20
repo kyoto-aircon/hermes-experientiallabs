@@ -42,6 +42,7 @@ from providers.base import ProviderProfile
 if __package__:
     from .account_usage import fetch_experientiallabs_account_usage
     from .catalog import (
+        CatalogCapabilitiesView,
         _FREE_ALLOWANCE_NOTE,
         entry_supported_reasoning_efforts,
         estimate_cost_from_usage,
@@ -60,6 +61,7 @@ if __package__:
 else:  # pragma: no cover - only when imported without package context
     from account_usage import fetch_experientiallabs_account_usage
     from catalog import (
+        CatalogCapabilitiesView,
         _FREE_ALLOWANCE_NOTE,
         entry_supported_reasoning_efforts,
         estimate_cost_from_usage,
@@ -565,14 +567,27 @@ class ExperientialLabsProfile(ProviderProfile):
             self.name, base_url=base_url, api_key=api_key
         )
 
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Per-model completion token ceiling from cached catalog (never blocks on HTTP)."""
+        entry = get_model_entry(model, warm=False)
+        if isinstance(entry, dict):
+            max_out = entry.get("max_output_tokens")
+            if isinstance(max_out, int) and not isinstance(max_out, bool) and max_out > 0:
+                return max_out
+        return self.default_max_tokens
+
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Live cheap-tier aux pick from cached catalog, falling back to ``_AUX_MODEL``."""
         entries = get_cached_entries(warm=False)
         if entries:
             candidates = _AUX_VISION_CANDIDATES if vision else _AUX_TEXT_CANDIDATES
             for slug in candidates:
-                if slug in entries:
-                    return slug
+                entry = entries.get(slug)
+                if not isinstance(entry, dict):
+                    continue
+                if vision and entry.get("supports_vision") is False:
+                    continue
+                return slug
         return _AUX_MODEL
 
     def default_vision_model(self) -> str | None:
@@ -611,6 +626,7 @@ experientiallabs = ExperientialLabsProfile(
     supports_vision=True,
     default_aux_model=_AUX_MODEL,
     fallback_models=_FALLBACK_MODELS,
+    model_capabilities=CatalogCapabilitiesView(),
     classify_api_error=classify_experientiallabs_api_error,
     **_EXTRA_PROFILE_KWARGS,
 )

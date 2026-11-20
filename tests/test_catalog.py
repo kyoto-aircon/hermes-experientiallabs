@@ -557,3 +557,204 @@ class TestProfileParityHooks:
             assert prof.replays_tool_call_signatures is True
         if "setup_reasoning_efforts" in fields:
             assert callable(prof.setup_reasoning_efforts)
+
+    def test_get_max_tokens_reads_cached_ceiling(self, plugin, catalog):
+        prof = plugin.experientiallabs
+        assert prof.get_max_tokens("claude-opus-5.5") is None
+        catalog.seed_catalog_from_v1_items(LIVE_V1_MODELS, save_disk=False)
+        assert prof.get_max_tokens("claude-opus-5.5") == 128000
+        assert prof.get_max_tokens("claude-haiku-4.5:free") == 64000
+        assert prof.get_max_tokens("deepseek-v4-flash") == 384000
+        assert prof.get_max_tokens("unknown-slug") is None
+
+
+LIVE_PUBLIC_CATALOG = {
+    "models": [
+        {
+            "model": {
+                "slug": "claude-opus-5.5",
+                "maker": "Anthropic",
+                "input_modalities": ["text", "image", "pdf"],
+                "context_window": 1000000,
+                "max_input_tokens": 1000000,
+                "max_output_tokens": 128000,
+                "supported_params": {"tools": True, "reasoning": True},
+            }
+        },
+        {
+            "model": {
+                "slug": "deepseek-v4-flash",
+                "maker": "DeepSeek",
+                "input_modalities": ["text"],
+                "context_window": 1048576,
+                "max_input_tokens": 664576,
+                "max_output_tokens": 384000,
+                "supported_params": {"tools": True, "reasoning": True},
+            }
+        },
+        {
+            "model": {
+                "slug": "claude-haiku-4.5",
+                "maker": "Anthropic",
+                "input_modalities": ["text", "image"],
+                "context_window": 200000,
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+                "supported_params": {"tools": True, "reasoning": False},
+            }
+        },
+        {
+            "model": {
+                "slug": "aion-rp-llama-3.1-8b",
+                "maker": "Aion",
+                "input_modalities": ["text"],
+                "context_window": 131072,
+                "max_input_tokens": 131072,
+                "max_output_tokens": 16384,
+                "supported_params": {"tools": False, "reasoning": False},
+            }
+        },
+    ]
+}
+
+
+class TestModelCapabilitiesSeam:
+    def test_public_meta_enriches_vision_family_and_max_input(self, catalog):
+        catalog.seed_catalog_from_v1_items(LIVE_V1_MODELS, save_disk=False)
+        meta = catalog.seed_public_catalog_meta(LIVE_PUBLIC_CATALOG, save_disk=False)
+        assert "claude-opus-5.5" in meta
+        assert "deepseek-v4-flash" in meta
+
+        opus = catalog.get_model_entry("claude-opus-5.5", warm=False)
+        assert opus is not None
+        assert opus["supports_vision"] is True
+        assert opus["model_family"] == "Anthropic"
+        assert opus["context_window"] == 1000000
+
+        ds = catalog.get_model_entry("deepseek-v4-flash", warm=False)
+        assert ds is not None
+        assert ds["supports_vision"] is False
+        # max_input_tokens (664576) overrides raw context_window_tokens (1048576)
+        assert ds["context_window"] == 664576
+        assert ds["model_family"] == "DeepSeek"
+
+    def test_v1_refresh_preserves_enriched_public_metadata(self, catalog):
+        catalog.seed_catalog_from_v1_items(LIVE_V1_MODELS, save_disk=False)
+        catalog.seed_public_catalog_meta(LIVE_PUBLIC_CATALOG, save_disk=False)
+        # Re-seeding /v1/models must not wipe supports_vision or tighter max_input_tokens.
+        catalog.seed_catalog_from_v1_items(LIVE_V1_MODELS, save_disk=False)
+        ds = catalog.get_model_entry("deepseek-v4-flash", warm=False)
+        assert ds is not None
+        assert ds["supports_vision"] is False
+        assert ds["context_window"] == 664576
+        assert ds["model_family"] == "DeepSeek"
+
+    def test_profile_model_capabilities_dict_view_and_hermes_models_dev_integration(
+        self, plugin, catalog, monkeypatch
+    ):
+        import providers
+        from agent.models_dev import get_model_capabilities
+
+        catalog.seed_catalog_from_v1_items(LIVE_V1_MODELS, save_disk=False)
+        catalog.seed_public_catalog_meta(LIVE_PUBLIC_CATALOG, save_disk=False)
+
+        prof = plugin.experientiallabs
+        assert isinstance(prof.model_capabilities, dict)
+        assert "claude-opus-5.5" in prof.model_capabilities
+        assert prof.model_capabilities.get("missing-model", {}) == {}
+
+        # Suffixes and vendor prefixes resolve dynamically through .get()
+        free_caps = prof.model_capabilities.get("claude-opus-5.5:free", {})
+        assert free_caps["supports_vision"] is True
+        assert free_caps["supports_tools"] is True
+        assert free_caps["supports_reasoning"] is True
+        assert free_caps["context_window"] == 1000000
+
+        # Point Hermes' models_dev seam at this repo's profile
+        monkeypatch.setattr(
+            providers,
+            "get_provider_profile",
+            lambda name: prof if name == "experientiallabs" else None,
+        )
+
+        mc_opus = get_model_capabilities("experientiallabs", "claude-opus-5.5")
+        assert mc_opus is not None
+        assert mc_opus.supports_tools is True
+        assert mc_opus.supports_vision is True
+        assert mc_opus.supports_reasoning is True
+        assert mc_opus.context_window == 1000000
+        assert mc_opus.model_family == "Anthropic"
+
+        mc_ds = get_model_capabilities("experientiallabs", "deepseek-v4-flash")
+        assert mc_ds is not None
+        assert mc_ds.supports_tools is True
+        assert mc_ds.supports_vision is False
+        assert mc_ds.supports_reasoning is True
+        assert mc_ds.context_window == 664576
+
+        mc_haiku = get_model_capabilities("experientiallabs", "claude-haiku-4.5")
+        assert mc_haiku is not None
+        assert mc_haiku.supports_tools is True
+        assert mc_haiku.supports_vision is True
+        assert mc_haiku.supports_reasoning is False
+
+        mc_rp = get_model_capabilities("experientiallabs", "aion-rp-llama-3.1-8b")
+        assert mc_rp is not None
+        assert mc_rp.supports_tools is False
+        assert mc_rp.supports_vision is False
+
+    def test_vision_aux_skips_candidates_attested_non_vision(self, plugin, catalog):
+        catalog.seed_catalog_from_v1_items(
+            [
+                {
+                    "id": "gpt-6-luna",
+                    "supports_completions": True,
+                    "supports_tools": True,
+                },
+                {
+                    "id": "claude-haiku-4.5",
+                    "supports_completions": True,
+                    "supports_tools": True,
+                },
+            ],
+            save_disk=False,
+        )
+        catalog.seed_public_catalog_meta(
+            {
+                "models": [
+                    {
+                        "model": {
+                            "slug": "gpt-6-luna",
+                            "input_modalities": ["text"],
+                        }
+                    },
+                    {
+                        "model": {
+                            "slug": "claude-haiku-4.5",
+                            "input_modalities": ["text", "image"],
+                        }
+                    },
+                ]
+            },
+            save_disk=False,
+        )
+        assert plugin.experientiallabs.resolve_aux_model(vision=True) == "claude-haiku-4.5"
+
+    def test_fetch_public_catalog_meta_fails_open(self, catalog, monkeypatch):
+        class BoomClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, url, headers=None):
+                raise RuntimeError("network down")
+
+        monkeypatch.setitem(
+            sys.modules, "httpx", types.SimpleNamespace(Client=BoomClient)
+        )
+        assert catalog.fetch_public_catalog_meta() == {}

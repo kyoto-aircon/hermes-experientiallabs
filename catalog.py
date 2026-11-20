@@ -37,10 +37,12 @@ from typing import Any, Sequence
 
 _DEFAULT_BASE_URL = "https://api.experientiallabs.ai/v1"
 _PUBLIC_MODEL_DETAIL_BASE = "https://api.experientiallabs.ai/api/models"
+_PUBLIC_CATALOG_URL = "https://api.experientiallabs.ai/api/models?limit=1000"
 _DISK_CACHE_FILENAME = "experientiallabs_catalog.json"
 _DISK_TTL_S = 24 * 3600
 _FAIL_COOLDOWN_S = 60.0
 _LIVE_DETAIL_TIMEOUT_S = 5.0
+_PUBLIC_CATALOG_TIMEOUT_S = 8.0
 
 # Canonical low -> high reasoning effort ladder (mirrors agent.reasoning_effort).
 EFFORT_LADDER: tuple[str, ...] = (
@@ -323,6 +325,200 @@ def parse_public_model_detail_context(payload: Any) -> int | None:
     return _to_positive_int(model_obj.get("max_input_tokens")) or _to_positive_int(
         model_obj.get("context_window")
     )
+
+
+def parse_public_catalog_meta(payload: Any) -> dict[str, dict[str, Any]]:
+    """Extract per-slug vision/modalities, ``max_input_tokens``, and maker from
+    ``GET /api/models`` (keyless public catalog).
+
+    ``GET /v1/models`` omits ``input_modalities``, ``max_input_tokens``, and
+    ``maker``; this enrichment joins them onto cached entries so Hermes'
+    ``get_model_capabilities()`` has accurate per-model vision, input budget,
+    and model family.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    rows = payload.get("models")
+    if not isinstance(rows, list):
+        return {}
+    meta: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model_obj = row.get("model")
+        if not isinstance(model_obj, dict):
+            continue
+        slug = str(model_obj.get("slug") or "").strip()
+        if not slug:
+            continue
+        patch: dict[str, Any] = {}
+        mods = model_obj.get("input_modalities")
+        if isinstance(mods, list):
+            norm_mods = [str(m).strip().lower() for m in mods if isinstance(m, str)]
+            patch["supports_vision"] = "image" in norm_mods
+            if norm_mods:
+                patch["input_modalities"] = norm_mods
+        max_in = _to_positive_int(model_obj.get("max_input_tokens"))
+        if max_in is not None:
+            patch["max_input_tokens"] = max_in
+        ctx = _to_positive_int(model_obj.get("context_window"))
+        if ctx is not None:
+            patch["context_window"] = ctx
+        max_out = _to_positive_int(model_obj.get("max_output_tokens"))
+        if max_out is not None:
+            patch["max_output_tokens"] = max_out
+        maker = model_obj.get("maker")
+        if isinstance(maker, str) and maker.strip():
+            patch["model_family"] = maker.strip()
+        params = model_obj.get("supported_params")
+        if isinstance(params, dict):
+            if isinstance(params.get("tools"), bool):
+                patch["supports_tools"] = params["tools"]
+            if isinstance(params.get("reasoning"), bool):
+                patch["supports_reasoning"] = params["reasoning"]
+        if patch:
+            meta[slug] = patch
+    return meta
+
+
+def merge_public_meta_into_entries(
+    entries: dict[str, dict[str, Any]],
+    public_meta: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Enrich ``/v1/models`` entries with keyless ``/api/models`` metadata.
+
+    ``/v1/models`` wins on ``supports_tools`` / ``supports_reasoning`` (it
+    reflects the org's actual routable lanes); ``/api/models`` supplies
+    ``supports_vision``, ``input_modalities``, ``model_family``, and
+    ``max_input_tokens`` (which overrides raw ``context_window`` when tighter).
+    Public-only slugs not yet in ``entries`` are added too so capability
+    lookups work even before a keyed ``/v1/models`` call.
+    """
+    merged: dict[str, dict[str, Any]] = {k: dict(v) for k, v in entries.items()}
+    for slug, patch in public_meta.items():
+        cur = merged.get(slug)
+        if cur is None:
+            entry: dict[str, Any] = {"id": slug}
+            if "supports_vision" in patch:
+                entry["supports_vision"] = patch["supports_vision"]
+            if "input_modalities" in patch:
+                entry["input_modalities"] = patch["input_modalities"]
+            if "max_input_tokens" in patch:
+                entry["context_window"] = patch["max_input_tokens"]
+            elif "context_window" in patch:
+                entry["context_window"] = patch["context_window"]
+            if "max_output_tokens" in patch:
+                entry["max_output_tokens"] = patch["max_output_tokens"]
+            if "model_family" in patch:
+                entry["model_family"] = patch["model_family"]
+            if "supports_tools" in patch:
+                entry["supports_tools"] = patch["supports_tools"]
+            if "supports_reasoning" in patch:
+                entry["supports_reasoning"] = patch["supports_reasoning"]
+            merged[slug] = entry
+            continue
+        if "supports_vision" in patch:
+            cur["supports_vision"] = patch["supports_vision"]
+        if "input_modalities" in patch:
+            cur["input_modalities"] = patch["input_modalities"]
+        if "model_family" in patch and not cur.get("model_family"):
+            cur["model_family"] = patch["model_family"]
+        if "max_input_tokens" in patch:
+            # Gateway docs: max_input_tokens is the real input budget when a
+            # maker counts max_output inside context_window.
+            cur["context_window"] = patch["max_input_tokens"]
+        elif "context_window" in patch and "context_window" not in cur:
+            cur["context_window"] = patch["context_window"]
+        if "max_output_tokens" in patch and "max_output_tokens" not in cur:
+            cur["max_output_tokens"] = patch["max_output_tokens"]
+    return merged
+
+
+def entry_to_model_capabilities(entry: dict[str, Any] | None) -> dict[str, Any]:
+    """Convert one cached catalog entry into Hermes' canonical
+    ``ProviderProfile.model_capabilities`` schema (``agent/models_dev.py``).
+
+    Emits only keys actually attested by the catalog:
+    ``supports_tools``, ``supports_reasoning``, ``supports_vision``,
+    ``context_window``, ``max_output_tokens``, ``model_family``.
+    """
+    if not isinstance(entry, dict):
+        return {}
+    caps: dict[str, Any] = {}
+    if isinstance(entry.get("supports_tools"), bool):
+        caps["supports_tools"] = entry["supports_tools"]
+    if isinstance(entry.get("supports_reasoning"), bool):
+        caps["supports_reasoning"] = entry["supports_reasoning"]
+    if isinstance(entry.get("supports_vision"), bool):
+        caps["supports_vision"] = entry["supports_vision"]
+    ctx = _to_positive_int(entry.get("context_window"))
+    if ctx is not None:
+        caps["context_window"] = ctx
+    max_out = _to_positive_int(entry.get("max_output_tokens"))
+    if max_out is not None:
+        caps["max_output_tokens"] = max_out
+    family = entry.get("model_family")
+    if isinstance(family, str) and family.strip():
+        caps["model_family"] = family.strip()
+    return caps
+
+
+class CatalogCapabilitiesView(dict):
+    """Dynamic ``dict``-compatible view exposing live catalog capabilities to
+    Hermes' ``ProviderProfile.model_capabilities`` seam.
+
+    Hermes reads ``profile.model_capabilities.get(model, {})`` on hot paths
+    (``agent/models_dev.py``) and expects a ``dict``. Subclassing ``dict``
+    keeps ``isinstance(..., dict)`` true and zero-I/O on hot paths while
+    answering exact slugs, ``:free``/``:fast``/``:online`` variants, and
+    ``vendor/slug`` spellings from the memory/disk cache.
+    """
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        if not isinstance(key, str) or not key.strip():
+            return default
+        entry = get_model_entry(key, warm=True)
+        caps = entry_to_model_capabilities(entry)
+        return caps if caps else default
+
+    def __getitem__(self, key: str) -> dict[str, Any]:
+        val = self.get(key)
+        if val is None:
+            raise KeyError(key)
+        return val
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and bool(self.get(key))
+
+    def _snapshot(self) -> dict[str, dict[str, Any]]:
+        entries = get_cached_entries(warm=False) or {}
+        out: dict[str, dict[str, Any]] = {}
+        for slug, entry in entries.items():
+            caps = entry_to_model_capabilities(entry)
+            if caps:
+                out[slug] = caps
+        return out
+
+    def __iter__(self):
+        return iter(self._snapshot())
+
+    def __len__(self) -> int:
+        return len(self._snapshot())
+
+    def keys(self):
+        return self._snapshot().keys()
+
+    def values(self):
+        return self._snapshot().values()
+
+    def items(self):
+        return self._snapshot().items()
+
+    def copy(self) -> dict[str, dict[str, Any]]:
+        return self._snapshot()
+
+    def __bool__(self) -> bool:
+        return bool(get_cached_entries(warm=False))
 
 
 # ── Reasoning clamping & resolution (pure) ─────────────────────────────
@@ -619,6 +815,9 @@ class _HomeCache:
     failed_at: float | None = None
     disk_checked: bool = False
     warm_started: bool = False
+    public_meta_loaded: bool = False
+    public_meta_warm_started: bool = False
+    public_meta_failed_at: float | None = None
     detail_contexts: dict[str, int] = field(default_factory=dict)
 
 
@@ -708,12 +907,76 @@ def seed_catalog_from_v1_items(
     ids, entries = parse_v1_catalog(items)
     if entries:
         st = _state()
+        # Preserve any already-merged public metadata (supports_vision,
+        # model_family, tighter max_input_tokens) across v1 refreshes.
+        existing = st.entries or {}
+        if existing:
+            for slug, new_entry in entries.items():
+                prev = existing.get(slug)
+                if not isinstance(prev, dict):
+                    continue
+                for carry in ("supports_vision", "input_modalities", "model_family"):
+                    if carry in prev and carry not in new_entry:
+                        new_entry[carry] = prev[carry]
+                prev_ctx = _to_positive_int(prev.get("context_window"))
+                new_ctx = _to_positive_int(new_entry.get("context_window"))
+                if prev_ctx and new_ctx and prev_ctx < new_ctx and "input_modalities" in prev:
+                    new_entry["context_window"] = prev_ctx
         st.entries = entries
         st.failed_at = None
         st.disk_checked = True
         if save_disk:
             _save_disk_cache(entries)
     return ids, entries
+
+
+def seed_public_catalog_meta(
+    payload: Any, *, save_disk: bool = True
+) -> dict[str, dict[str, Any]]:
+    """Parse keyless ``/api/models`` payload and merge vision/modality/budget
+    metadata into the active home's cache."""
+    meta = parse_public_catalog_meta(payload)
+    if not meta:
+        return {}
+    st = _state()
+    base = st.entries or {}
+    merged = merge_public_meta_into_entries(base, meta)
+    st.entries = merged
+    st.public_meta_loaded = True
+    st.public_meta_failed_at = None
+    st.disk_checked = True
+    if save_disk:
+        _save_disk_cache(merged)
+    return meta
+
+
+def fetch_public_catalog_meta(
+    *, timeout: float = _PUBLIC_CATALOG_TIMEOUT_S
+) -> dict[str, dict[str, Any]]:
+    """Fetch keyless ``GET /api/models?limit=1000`` and merge into catalog cache.
+
+    Fails open (``{}``) on every error; intended for background warming so
+    hot paths and ``/model`` pickers never pay its latency.
+    """
+    try:
+        import httpx
+    except Exception:  # noqa: BLE001
+        return {}
+    headers = {"Accept": "application/json", "User-Agent": _user_agent()}
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.get(_PUBLIC_CATALOG_URL, headers=headers)
+        if response.status_code != 200:
+            _state().public_meta_failed_at = time.monotonic()
+            return {}
+        payload = response.json()
+    except Exception:  # noqa: BLE001
+        _state().public_meta_failed_at = time.monotonic()
+        return {}
+    meta = seed_public_catalog_meta(payload)
+    if not meta:
+        _state().public_meta_failed_at = time.monotonic()
+    return meta
 
 
 def _resolve_credentials() -> tuple[str, str]:
@@ -791,6 +1054,8 @@ def fetch_v1_catalog(
         return None
 
     ids, entries = seed_catalog_from_v1_items(items)
+    if entries and not _state().public_meta_loaded:
+        warm_public_meta_async()
     return ids if ids else (list(entries.keys()) or None)
 
 
@@ -799,9 +1064,40 @@ def _warm_catalog_sync() -> None:
     if st.failed_at is not None and (time.monotonic() - st.failed_at) < _FAIL_COOLDOWN_S:
         return
     api_key, base_url = _resolve_credentials()
-    if not api_key:
+    if api_key:
+        fetch_v1_catalog(api_key=api_key, base_url=base_url, timeout=6.0)
+    if not st.public_meta_loaded:
+        _warm_public_meta_sync()
+
+
+def _warm_public_meta_sync() -> None:
+    st = _state()
+    if (
+        st.public_meta_failed_at is not None
+        and (time.monotonic() - st.public_meta_failed_at) < _FAIL_COOLDOWN_S
+    ):
         return
-    fetch_v1_catalog(api_key=api_key, base_url=base_url, timeout=6.0)
+    fetch_public_catalog_meta(timeout=_PUBLIC_CATALOG_TIMEOUT_S)
+
+
+def warm_public_meta_async() -> None:
+    """Background warm for keyless ``/api/models`` vision/modality enrichment."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    st = _state()
+    if st.public_meta_warm_started or st.public_meta_loaded:
+        return
+    st.public_meta_warm_started = True
+    try:
+        ctx = contextvars.copy_context()
+        threading.Thread(
+            target=ctx.run,
+            args=(_warm_public_meta_sync,),
+            name="explabs-public-meta-warm",
+            daemon=True,
+        ).start()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def warm_catalog_async() -> None:
@@ -832,8 +1128,14 @@ def get_cached_entries(*, warm: bool = True) -> dict[str, dict[str, Any]] | None
         disk_entries, age = _load_disk_cache()
         if disk_entries is not None:
             st.entries = disk_entries
+            st.public_meta_loaded = any(
+                isinstance(e, dict) and "supports_vision" in e
+                for e in disk_entries.values()
+            )
             if warm and age >= _DISK_TTL_S:
                 warm_catalog_async()
+            elif warm and not st.public_meta_loaded:
+                warm_public_meta_async()
     if st.entries is None and warm:
         warm_catalog_async()
     return st.entries

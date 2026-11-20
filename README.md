@@ -12,6 +12,7 @@ profile automatically wires it into:
 - the auth registry and setup wizard
 - Desktop **Settings → Providers** (keys tab) and `hermes model`
 - the `/model` picker (live `GET /v1/models` filtered to chat/tool-capable models + dynamic `:free` promo variants, with a curated offline fallback)
+- catalog-backed per-model capabilities (`model_capabilities` for Hermes' `models_dev` badges/image-routing seam: `supports_tools`, `supports_reasoning`, `supports_vision` from `/api/models`, `max_input_tokens` context window, `max_output_tokens`, and `model_family`) plus `get_max_tokens`
 - catalog-backed reasoning control (per-model effort clamping, mandatory-reasoning disable omission, setup effort picker)
 - conversation linking (`X-Explabs-Session-Id`), non-PII attribution tags (`X-Explabs-Tags`), and per-request ZDR (`provider.zdr`) when connector data requires it
 - accurate per-model context windows (`get_model_context_length` / `live_context_length`), `max_tokens_param`, and live aux/vision fallback
