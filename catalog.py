@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import math
 import os
 import threading
 import time
@@ -120,6 +121,17 @@ def _to_positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _to_temperature(value: Any) -> float | None:
+    """Parse a finite temperature bound (``bool``/NaN/inf rejected; ``0.0`` valid)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _to_nonneg_nano_str(value: Any) -> str | None:
@@ -251,10 +263,24 @@ def parse_v1_model_item(item: Any) -> dict[str, Any] | None:
     if max_out is not None:
         entry["max_output_tokens"] = max_out
 
-    for flag in ("supports_tools", "supports_completions", "supports_reasoning"):
+    for flag in (
+        "supports_tools",
+        "supports_completions",
+        "supports_reasoning",
+        "supports_temperature",
+        "sampling_requires_reasoning_none",
+    ):
         val = item.get(flag)
         if isinstance(val, bool):
             entry[flag] = val
+
+    # Sampling constraints: pinned routes publish minimum == maximum (Claude 5
+    # family pins 1.0); ranged routes publish an accepted interval. Absent or
+    # malformed bounds stay absent so the clamp fails open.
+    for bound in ("minimum_temperature", "maximum_temperature"):
+        val = _to_temperature(item.get(bound))
+        if val is not None:
+            entry[bound] = val
 
     raw_efforts = item.get("supported_reasoning_efforts")
     if isinstance(raw_efforts, list):
