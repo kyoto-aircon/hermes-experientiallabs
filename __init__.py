@@ -58,6 +58,7 @@ if __package__:
         fetch_free_suffix_slugs,
         merge_free_slugs,
     )
+    from .sampling import resolve_temperature_override
 else:  # pragma: no cover - only when imported without package context
     from account_usage import fetch_experientiallabs_account_usage
     from catalog import (
@@ -77,6 +78,7 @@ else:  # pragma: no cover - only when imported without package context
         fetch_free_suffix_slugs,
         merge_free_slugs,
     )
+    from sampling import resolve_temperature_override
 
 # Curated /model picker fallback: cheap and free tiers that are all
 # tool-calling capable. Live GET /v1/models supersedes this when reachable.
@@ -293,6 +295,12 @@ def classify_experientiallabs_api_error(
             if code == "refusal":
                 return {"reason": "content_policy_blocked", "retryable": False}
             if code in ("invalid_parameter", "unsupported_parameter"):
+                # A rejection naming temperature is a sampling constraint, not a
+                # reasoning control: decline so the built-in format_error verdict
+                # stands (core's aux ladder strips temperature and remembers the
+                # route; the main loop keeps its fallback). See plan-w1.md.
+                if "temperature" in param or "temperature" in text_lower:
+                    return None
                 if ("reasoning" in param or "reasoning" in text_lower) and any(
                     m in text_lower for m in _REASONING_DISABLE_MARKERS
                 ):
@@ -472,23 +480,45 @@ class ExperientialLabsProfile(ProviderProfile):
         session_id: str | None = None,
         **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Attach catalog-clamped ``reasoning_effort`` + session/tag headers.
+        """Attach catalog-clamped ``reasoning_effort``, the sampling clamp, and
+        session/tag headers.
 
         - Reasoning: uses the cached ``/v1/models`` capability map (never blocks
           on HTTP). Omits disable (``none`` / ``enabled: False``) on
           mandatory-reasoning routes and non-reasoning models; clamps positive
           efforts monotonically to the model's supported vocabulary.
+        - Sampling: pinned routes (``minimum_temperature == maximum_temperature``)
+          force the pinned top-level ``temperature`` (overrides the caller's via
+          the transport's post-``_base_kwargs`` merge); published ranges clamp the
+          caller's value when it is known. Cold cache, ``supports_temperature:
+          false``, and reasoning-gated sampling leave the request untouched
+          (``sampling.py`` / ``plan-w1.md``).
         - Attribution & conversation linking: attaches ``X-Explabs-Session-Id``
           (hashed by the gateway) and safe non-PII ``X-Explabs-Tags`` headers
           (stripped before forwarding upstream).
         """
         top_level: dict[str, Any] = {}
 
+        entry = get_model_entry(model, warm=True)
         if isinstance(reasoning_config, dict) and reasoning_config:
-            entry = get_model_entry(model, warm=True)
             effort = resolve_reasoning_effort(model, reasoning_config, entry=entry)
             if effort is not None:
                 top_level["reasoning_effort"] = effort
+
+        # Sampling clamp (W1): a top-level temperature override wins over the
+        # caller's value; None means "leave the request untouched" (cold cache,
+        # supports_temperature=false, or sampling gated on reasoning being off).
+        reasoning_disabled = isinstance(reasoning_config, dict) and (
+            reasoning_config.get("enabled") is False
+            or str(reasoning_config.get("effort") or "").strip().lower() == "none"
+        )
+        temperature = resolve_temperature_override(
+            entry,
+            context.get("temperature"),
+            reasoning_disabled=reasoning_disabled,
+        )
+        if temperature is not None:
+            top_level["temperature"] = temperature
 
         headers: dict[str, str] = {}
         sticky = _sticky_session_id(session_id)
