@@ -58,6 +58,7 @@ if __package__:
         fetch_free_suffix_slugs,
         merge_free_slugs,
     )
+    from .retry_hints import rate_limit_error_context
 else:  # pragma: no cover - only when imported without package context
     from account_usage import fetch_experientiallabs_account_usage
     from catalog import (
@@ -77,6 +78,7 @@ else:  # pragma: no cover - only when imported without package context
         fetch_free_suffix_slugs,
         merge_free_slugs,
     )
+    from retry_hints import rate_limit_error_context
 
 # Curated /model picker fallback: cheap and free tiers that are all
 # tool-calling capable. Live GET /v1/models supersedes this when reachable.
@@ -380,16 +382,28 @@ def classify_experientiallabs_api_error(
                         "retryable": False,
                         "should_fallback": True,
                     }
-                return {
+                verdict = {
                     "reason": "rate_limit",
                     "retryable": True,
                     "should_fallback": True,
                 }
-            if code in _RATE_LIMIT_429_CODES:
-                return {"reason": "rate_limit", "retryable": True}
-            if code == "unavailable_route":
-                return {"reason": "overloaded", "retryable": True}
-            return None
+            elif code in _RATE_LIMIT_429_CODES:
+                verdict = {"reason": "rate_limit", "retryable": True}
+            elif code == "unavailable_route":
+                verdict = {"reason": "overloaded", "retryable": True}
+            else:
+                return None
+            # Carry the gateway's reset window on the verdict. This hook runs
+            # BEFORE the built-in _status_429 (which attaches its own
+            # error_context), so without this the retry-exhausted terminal copy
+            # cannot name the reset: max_retries_exhausted_result reads
+            # classified.error_context["reset_at"] as absolute epoch seconds —
+            # the same shape Nous' rate guard and the fallback cooldown expect.
+            # Retry-After off the raw SDK error, defensively (retry_hints.py).
+            hint = rate_limit_error_context(error, body=body, message=text)
+            if hint:
+                verdict["error_context"] = hint
+            return verdict
 
         if status_code == 502 and code in _SERVER_502_CODES:
             return {"reason": "server_error", "retryable": True}
